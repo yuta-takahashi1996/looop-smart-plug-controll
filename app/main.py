@@ -7,9 +7,12 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.repositories.database import get_session
 
 logger = logging.getLogger(__name__)
 
@@ -30,5 +33,6 @@ app = FastAPI(title="Looop Smart Plug Controller", lifespan=lifespan)
 
 
 @app.get("/healthz")
-def healthz() -> dict[str, str]:
+def healthz(session: Session = Depends(get_session)) -> dict[str, str]:
+    session.execute(text("SELECT 1"))
     return {"status": "ok"}
