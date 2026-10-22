@@ -1,0 +1,11 @@
+.git
+.venv
+.env
+.pytest_cache
+**/__pycache__
+bin
+data
+logs
+docs
+tests
+app/static/css/app.css

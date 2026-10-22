@@ -1,0 +1,39 @@
+services:
+  looop-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: looop-controller
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      TZ: Asia/Tokyo
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: sqlite:////app/data/app.db
+
+    ports:
+      - "127.0.0.1:8080:8080"
+
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+
+    stop_grace_period: 30s
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
