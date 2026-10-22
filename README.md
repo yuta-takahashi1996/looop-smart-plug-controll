@@ -4,7 +4,26 @@ Looopでんきの市場連動型プラン（30分単位で変動する電力単�
 
 ## プロジェクトの現状
 
-設計フェーズ。実装（`app/` ソースツリー、`pyproject.toml`、`Dockerfile` など）はまだ存在しない。詳細設計は [`docs/`](./docs) 配下を参照。
+Phase 1（環境構築）完了。Docker Compose で起動し、Web UI（仮のダッシュボード）にアクセスできる。詳細設計は [`docs/`](./docs) 配下を参照。
+
+## 起動方法
+
+```bash
+cp .env.example .env        # 初期値は DRY_RUN=true
+docker compose up -d --build
+```
+
+http://127.0.0.1:8080 にアクセスする。
+
+ローカル開発（[uv](https://docs.astral.sh/uv/) が必要）：
+
+```bash
+uv sync
+scripts/tailwind.sh         # CSS 生成
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload --port 8080
+uv run pytest
+```
 
 ## 基本方針
 
