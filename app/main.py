@@ -6,11 +6,14 @@ Web UI とスケジューラーは同一プロセスで動作させる（スケ�
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.api import dashboard
 from app.config import get_settings
 from app.repositories.database import get_session
 
@@ -30,6 +33,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Looop Smart Plug Controller", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
+app.include_router(dashboard.router)
 
 
 @app.get("/healthz")
