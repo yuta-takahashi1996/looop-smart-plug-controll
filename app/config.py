@@ -6,13 +6,21 @@ SwitchBot の認証情報などの秘匿情報は環境変数のみで管理し�
 
 from datetime import time
 from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# ループバックとプライベートアドレス帯（Docker のブリッジ経由のアクセスを含む）
+DEFAULT_ALLOWED_NETWORKS = "127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+
+
+def _parse_networks(value: str) -> list[IPv4Network | IPv6Network]:
+    return [ip_network(part.strip()) for part in value.split(",") if part.strip()]
 
 
 class Settings(BaseSettings):
@@ -31,6 +39,15 @@ class Settings(BaseSettings):
     # Web UI
     web_host: str = "0.0.0.0"
     web_port: int = 8080
+    web_username: str = "admin"
+    # scripts/hash_password.py で生成した scrypt ハッシュ。未設定の場合はログインできない
+    web_password_hash: SecretStr = SecretStr("")
+    # セッションCookieの署名鍵。未設定の場合はログインできない
+    session_secret: SecretStr = SecretStr("")
+    # Web UI へのアクセスを許可する接続元（カンマ区切りのCIDR）
+    allowed_networks: Annotated[list[IPv4Network | IPv6Network], NoDecode] = Field(
+        default_factory=lambda: _parse_networks(DEFAULT_ALLOWED_NETWORKS)
+    )
 
     # Operation
     operation_start: time = time(9, 0)
@@ -55,6 +72,17 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+    @field_validator("allowed_networks", mode="before")
+    @classmethod
+    def _split_networks(cls, value: object) -> object:
+        if isinstance(value, str):
+            return _parse_networks(value)
+        return value
+
+    @property
+    def auth_configured(self) -> bool:
+        return bool(self.web_password_hash.get_secret_value() and self.session_secret.get_secret_value())
 
 
 @lru_cache
