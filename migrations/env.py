@@ -2,6 +2,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
+import app.models  # noqa: F401  autogenerate 用にモデルを登録する
 from app.config import get_settings
 from app.repositories.database import Base, create_db_engine
 
