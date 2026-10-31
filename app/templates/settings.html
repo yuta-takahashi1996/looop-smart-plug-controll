@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card %}
+
+{% block title %}設定 | Looop Smart Plug Controller{% endblock %}
+
+{% block content %}
+<h1 class="mb-4 text-2xl font-bold">設定</h1>
+
+<div class="grid gap-4 lg:grid-cols-[2fr_1fr]">
+  {% call card("制御条件") %}
+  <div id="settings-form">
+    {% include "components/settings_form.html" %}
+  </div>
+  {% endcall %}
+
+  {% call card("Dry Run") %}
+  <p class="text-sm">
+    現在：<span class="font-semibold {{ 'text-amber-300' if dry_run else 'text-rose-300' }}">{{ "有効（実コマンドを送信しない）" if dry_run else "無効（実制御中）" }}</span>
+  </p>
+  <p class="mt-2 text-xs text-slate-500">
+    Dry Run の解除は、Web UI 上での明示的な確認操作を経て行います（docs/14-safety.md §14.3）。この画面からは変更できません。
+  </p>
+  {% endcall %}
+</div>
+{% endblock %}

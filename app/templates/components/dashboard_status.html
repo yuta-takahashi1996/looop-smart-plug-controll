@@ -1,0 +1,52 @@
+{% from "components/ui.html" import card, stat, state_badge %}
+{%- set s = summary -%}
+<div class="grid gap-4 lg:grid-cols-3">
+  {% call card("電力情報") %}
+  <dl class="grid grid-cols-2 gap-4">
+    {{ stat("現在の電源料金単価", "%.2f"|format(s.current_price), "円/kWh") }}
+    {{ stat("現在の推定実効単価", "%.2f"|format(s.current_effective_price), "円/kWh", "蓄電池利用時（往復効率込み）") }}
+    {{ stat("次の30分コマ", "%.2f"|format(s.next_price), "円/kWh") }}
+    {{ stat("当日の最高 / 最低", "%.1f / %.1f"|format(s.day_max_price, s.day_min_price), "円/kWh") }}
+  </dl>
+  <p class="mt-4 text-xs text-slate-500">
+    予報の最終取得：{{ s.forecast_fetched_at.strftime("%m/%d %H:%M") if s.forecast_fetched_at else "未取得" }}
+  </p>
+  {% endcall %}
+
+  {% call card("制御情報") %}
+  <dl class="grid grid-cols-[max-content_1fr] items-center gap-x-4 gap-y-2 text-sm">
+    <dt class="text-slate-400">自動制御</dt>
+    <dd>{{ "有効" if s.auto_control_enabled else "停止中" }} {{ state_badge(s.mode) }}</dd>
+    <dt class="text-slate-400">プラグの状態</dt>
+    <dd>{{ state_badge(s.plug_state) }} <span class="text-xs text-slate-500">保存済みの確認結果</span></dd>
+    <dt class="text-slate-400">次回切り替え</dt>
+    <dd>
+      {% if s.next_switch %}
+      {{ s.next_switch.start.strftime("%H:%M") }} → {{ state_badge(s.next_switch.target_state) }}
+      {% else %}
+      <span class="text-slate-500">本日の予定なし</span>
+      {% endif %}
+    </dd>
+    <dt class="text-slate-400">最終操作</dt>
+    <dd>
+      {% if s.last_log %}
+      {{ s.last_log.executed_at.strftime("%H:%M") }} {{ state_badge(s.last_log.source) }} {{ state_badge(s.last_log.result) }}
+      {% else %}
+      <span class="text-slate-500">なし</span>
+      {% endif %}
+    </dd>
+    <dt class="text-slate-400">システム</dt>
+    <dd>{{ state_badge(s.system_status) }}</dd>
+  </dl>
+  {% endcall %}
+
+  {% call card("集計情報") %}
+  <dl class="grid grid-cols-2 gap-4">
+    {{ stat("本日の推定節約額", "%.1f"|format(s.today_saving), "円") }}
+    {{ stat("今月の推定節約額", "%.1f"|format(s.month_saving), "円") }}
+    {{ stat("本日の切り替え回数", s.today_switch_count, "回") }}
+    {{ stat("本日のOFF累計", s.today_off_minutes, "分") }}
+  </dl>
+  {% endcall %}
+</div>
+<p class="mt-2 text-right text-xs text-slate-500">最終更新 {{ now.strftime("%H:%M:%S") }}（60秒ごとに自動更新）</p>

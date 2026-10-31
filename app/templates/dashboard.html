@@ -1,21 +1,30 @@
 {% extends "base.html" %}
+{% from "components/ui.html" import card %}
 
 {% block title %}ダッシュボード | Looop Smart Plug Controller{% endblock %}
 
 {% block content %}
-<h1 class="mb-4 text-2xl font-bold">ダッシュボード</h1>
+<div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+  <h1 class="text-2xl font-bold">ダッシュボード</h1>
+  <p class="text-xs text-slate-500">モックデータを表示しています（Phase 3 で実データへ切り替え予定）</p>
+</div>
 
-<section class="rounded-lg border border-slate-800 bg-slate-900 p-4">
-  <h2 class="mb-2 font-semibold">システム状態</h2>
-  <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1 text-sm">
-    <dt class="text-slate-400">実行環境</dt>
-    <dd>{{ app_env }}</dd>
-    <dt class="text-slate-400">Dry Run</dt>
-    <dd>{{ "有効" if dry_run else "無効" }}</dd>
-    <dt class="text-slate-400">対象エリア</dt>
-    <dd>{{ looop_area }}</dd>
-    <dt class="text-slate-400">運用時間</dt>
-    <dd>{{ operation_start.strftime("%H:%M") }} 〜 {{ operation_end.strftime("%H:%M") }}</dd>
-  </dl>
-</section>
+<div id="dashboard-status"
+     hx-get="{{ url_for('dashboard_status') }}"
+     hx-trigger="every 60s"
+     hx-swap="innerHTML">
+  {% include "components/dashboard_status.html" %}
+</div>
+
+<div class="mt-4">
+  {% call card("手動操作") %}
+  <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+    {% for label in ["自動制御開始", "自動制御停止", "プラグON", "プラグOFF", "スケジュール再生成", "予報を再取得"] %}
+    <button type="button" disabled
+            class="cursor-not-allowed rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-500">{{ label }}</button>
+    {% endfor %}
+  </div>
+  <p class="mt-3 text-xs text-slate-500">手動操作は Control Service の実装（Phase 6）で有効になります。手動操作を行うと MANUAL モードへ移行し、自動制御で上書きされなくなります。</p>
+  {% endcall %}
+</div>
 {% endblock %}
