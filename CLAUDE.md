@@ -38,7 +38,7 @@ docker compose down
 ## Pull Request 作成規約
 
 - タイトルは対応する Issue のタイトルに合わせる（例：Issue「Phase 1: 環境構築」→ PR「Phase 1: 環境構築」）。
-- アサインはリポジトリオーナー（`yutaman04`）にする（`gh pr create --assignee yutaman04`）。
+- アサインはリポジトリオーナー（GitHub アカウント `yuta-takahashi1996`）にする（`gh pr create --assignee yuta-takahashi1996`）。git の `user.name`（`yutaman04`）は GitHub のアカウント名ではないため指定できない。
 - 本文は以下のテンプレートに従う。対応 Issue は「概要」に `Closes #<番号>` で記載する。
 
 ```markdown
