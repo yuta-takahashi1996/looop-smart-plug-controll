@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}ダッシュボード | Looop Smart Plug Controller{% endblock %}
+
+{% block content %}
+<h1 class="mb-4 text-2xl font-bold">ダッシュボード</h1>
+
+<section class="rounded-lg border border-slate-800 bg-slate-900 p-4">
+  <h2 class="mb-2 font-semibold">システム状態</h2>
+  <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1 text-sm">
+    <dt class="text-slate-400">実行環境</dt>
+    <dd>{{ app_env }}</dd>
+    <dt class="text-slate-400">Dry Run</dt>
+    <dd>{{ "有効" if dry_run else "無効" }}</dd>
+    <dt class="text-slate-400">対象エリア</dt>
+    <dd>{{ looop_area }}</dd>
+    <dt class="text-slate-400">運用時間</dt>
+    <dd>{{ operation_start.strftime("%H:%M") }} 〜 {{ operation_end.strftime("%H:%M") }}</dd>
+  </dl>
+</section>
+{% endblock %}

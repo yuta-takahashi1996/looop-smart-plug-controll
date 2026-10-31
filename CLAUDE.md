@@ -4,9 +4,51 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクトの現状
 
-実装はまだ存在しない。リポジトリには `README.md`（概要）、`docs/` 配下の日本語詳細設計書、本ファイルしかなく、`pyproject.toml` / `Dockerfile` / `compose.yaml` / `app/` ソースツリーはまだ存在しない。実装フェーズにおける Phase 1（環境構築、[docs/15-roadmap.md](docs/15-roadmap.md)）も未着手。
+Phase 1（環境構築、[docs/15-roadmap.md](docs/15-roadmap.md)）完了。FastAPI アプリの骨格、設定読み込み（`app/config.py`）、SQLAlchemy + Alembic（テーブルは未作成）、Jinja2/Tailwind/HTMX の基盤、Docker Compose 構成が存在する。Web UI は仮のダッシュボード（`/`）と `/healthz` のみ。
 
-ここでの作業は設計書をゼロから実装することになる。`docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。pytest や docker compose などの実ツールが整備された時点で、このファイルに実際のコマンドを追記すること。
+`docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。
+
+## 開発コマンド
+
+```bash
+uv sync                                  # 依存関係のインストール（Python 3.12、.venv）
+uv run pytest                            # テスト全体
+uv run pytest tests/test_api.py::test_healthz   # 単一テスト
+scripts/tailwind.sh                      # app/static/css/app.css を生成（初回は bin/ に Standalone CLI を取得）
+scripts/tailwind.sh --watch              # テンプレート編集中の監視ビルド
+uv run alembic upgrade head              # マイグレーション適用（DATABASE_URL、既定は data/app.db）
+uv run alembic revision --autogenerate -m "..."  # マイグレーション作成
+uv run uvicorn app.main:app --reload --port 8080 # ローカル起動（事前に tailwind.sh で CSS 生成）
+
+cp .env.example .env                     # 初回のみ
+docker compose up -d --build             # http://127.0.0.1:8080
+docker compose logs -f
+docker compose down
+```
+
+- 依存の追加は `uv add <pkg>`（開発用は `uv add --dev <pkg>`）で行い、`uv.lock` もコミットする。
+- `app/static/css/app.css` は生成物のためコミットしない（Docker ビルド時に生成）。HTMX / Chart.js は `app/static/js/` に同梱している（宅内LANでCDNに依存しないため）。
+- テストは `tests/conftest.py` でインメモリ SQLite（`DATABASE_URL=sqlite://`）を使う。
+- コンテナは起動時に `alembic upgrade head` を実行してから uvicorn を起動する。
+- 共有の `Jinja2Templates` は `app/templating.py` にある。
+
+## Pull Request 作成規約
+
+- タイトルは対応する Issue のタイトルに合わせる（例：Issue「Phase 1: 環境構築」→ PR「Phase 1: 環境構築」）。
+- アサインはリポジトリオーナー（`yutaman04`）にする（`gh pr create --assignee yutaman04`）。
+- 本文は以下のテンプレートに従う。対応 Issue は「概要」に `Closes #<番号>` で記載する。
+
+```markdown
+## 概要
+
+## 実装内容
+
+## 確認したこと
+
+## レビュー観点
+
+## その他
+```
 
 ## システム概要
 
