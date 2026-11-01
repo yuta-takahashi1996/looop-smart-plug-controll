@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card, state_badge %}
+
+{% block title %}制御履歴 | Looop Smart Plug Controller{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+  <h1 class="text-2xl font-bold">制御履歴</h1>
+  <form method="get" action="{{ url_for('history') }}" class="flex items-center gap-2 text-sm">
+    <label for="history-date" class="text-slate-400">日付</label>
+    <input id="history-date" type="date" name="date" value="{{ day.isoformat() }}" max="{{ today.isoformat() }}"
+           class="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 [color-scheme:dark]">
+    <button type="submit" class="rounded-md bg-slate-700 px-3 py-1.5 hover:bg-slate-600">表示</button>
+  </form>
+</div>
+
+{% call card(None) %}
+{% if logs %}
+<div class="-mx-4 overflow-x-auto">
+  <table class="w-full min-w-[52rem] text-left text-sm">
+    <thead class="whitespace-nowrap border-b border-slate-800 text-xs text-slate-400">
+      <tr>
+        <th class="px-4 py-2 font-medium">操作日時</th>
+        <th class="px-4 py-2 font-medium">操作元</th>
+        <th class="px-4 py-2 font-medium">操作前</th>
+        <th class="px-4 py-2 font-medium">要求</th>
+        <th class="px-4 py-2 font-medium">確認結果</th>
+        <th class="px-4 py-2 font-medium">理由</th>
+        <th class="px-4 py-2 font-medium">エラー</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800/70">
+      {% for log in logs %}
+      <tr>
+        <td class="whitespace-nowrap px-4 py-2 tabular-nums">{{ log.executed_at.strftime("%m/%d %H:%M") }}</td>
+        <td class="px-4 py-2">{{ state_badge(log.source) }}</td>
+        <td class="px-4 py-2">{{ log.previous_state }}</td>
+        <td class="px-4 py-2">{{ log.requested_state }}</td>
+        <td class="whitespace-nowrap px-4 py-2">{{ state_badge(log.result) }} {{ log.actual_state or "—" }}</td>
+        <td class="px-4 py-2">{{ log.reason }}</td>
+        <td class="px-4 py-2 text-rose-300">{{ log.error_message or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="text-sm text-slate-400">この日の操作履歴はありません。</p>
+{% endif %}
+{% endcall %}
+<p class="mt-2 text-xs text-slate-500">モックデータを表示しています（制御ログの記録は Phase 5 以降で実装予定）。</p>
+{% endblock %}

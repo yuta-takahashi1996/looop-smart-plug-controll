@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card, state_badge %}
+
+{% block title %}運転スケジュール | Looop Smart Plug Controller{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+  <h1 class="text-2xl font-bold">運転スケジュール</h1>
+  <p class="text-sm text-slate-400">
+    {{ day.strftime("%Y/%m/%d") }}・運用時間 {{ operation_start.strftime("%H:%M") }}〜{{ operation_end.strftime("%H:%M") }}・推定節約額 合計
+    <span class="font-semibold text-slate-200">{{ "%.1f"|format(total_saving) }}円</span>
+  </p>
+</div>
+
+{% call card(None) %}
+{% if entries %}
+<div class="-mx-4 overflow-x-auto">
+  <table class="w-full min-w-[40rem] text-left text-sm">
+    <thead class="whitespace-nowrap border-b border-slate-800 text-xs text-slate-400">
+      <tr>
+        <th class="px-4 py-2 font-medium">時刻</th>
+        <th class="px-4 py-2 text-right font-medium">予報単価</th>
+        <th class="px-4 py-2 font-medium">制御予定</th>
+        <th class="px-4 py-2 font-medium">理由</th>
+        <th class="px-4 py-2 text-right font-medium">推定節約額</th>
+        <th class="px-4 py-2 font-medium">状態</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-800/70">
+      {% for e in entries %}
+      <tr class="{{ 'text-slate-500' if e.status == 'DONE' else '' }}">
+        <td class="whitespace-nowrap px-4 py-2 tabular-nums">{{ e.start.strftime("%H:%M") }}〜{{ e.end.strftime("%H:%M") }}</td>
+        <td class="whitespace-nowrap px-4 py-2 text-right tabular-nums">{{ "%.1f"|format(e.price) }}円</td>
+        <td class="px-4 py-2">{{ state_badge(e.target_state) }}</td>
+        <td class="px-4 py-2">{{ e.reason }}</td>
+        <td class="whitespace-nowrap px-4 py-2 text-right tabular-nums">{{ "%.1f"|format(e.estimated_saving) }}円</td>
+        <td class="px-4 py-2">{{ state_badge(e.status) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="text-sm text-slate-400">本日の制御予定はありません。</p>
+{% endif %}
+{% endcall %}
+<p class="mt-2 text-xs text-slate-500">モックデータを表示しています（最適化エンジンは Phase 4 で実装予定）。</p>
+{% endblock %}

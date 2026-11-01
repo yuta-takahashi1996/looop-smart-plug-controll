@@ -3,8 +3,9 @@
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
 
@@ -18,6 +19,8 @@ def create_db_engine(database_url: str) -> Engine:
         database_url,
         # FastAPI のスレッドプールとスケジューラーから同一 DB を利用するため
         connect_args={"check_same_thread": False},
+        # インメモリ DB（テスト用）は接続ごとに別 DB になるため、単一接続を共有する
+        poolclass=StaticPool if make_url(database_url).database in (None, "", ":memory:") else None,
     )
 
     @event.listens_for(engine, "connect")

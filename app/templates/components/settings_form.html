@@ -1,0 +1,34 @@
+{# 設定フォーム。HTMX の送信結果としてこの部分のみ差し替える #}
+<form method="post" action="{{ url_for('settings') }}"
+      hx-post="{{ url_for('settings') }}" hx-target="#settings-form" hx-swap="innerHTML"
+      class="space-y-4">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+
+  {% if saved %}
+  <p class="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status">設定を保存しました。</p>
+  {% endif %}
+  {% if errors %}
+  <ul class="list-inside list-disc rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">
+    {% for message in errors %}<li>{{ message }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  <div class="grid gap-4 sm:grid-cols-2">
+    {% for key, label, unit, attrs in fields %}
+    <label class="block text-sm">
+      <span class="text-slate-400">{{ label }}</span>
+      <span class="mt-1 flex items-center gap-2">
+        <input name="{{ key }}" value="{{ values[key] }}" required
+               {% for attr, value in attrs.items() %}{{ attr }}="{{ value }}" {% endfor %}
+               class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 tabular-nums [color-scheme:dark] focus:border-sky-500 focus:outline-none">
+        {% if unit %}<span class="w-14 shrink-0 text-xs text-slate-400">{{ unit }}</span>{% endif %}
+      </span>
+    </label>
+    {% endfor %}
+  </div>
+
+  <div class="flex items-center justify-end gap-3">
+    <span class="htmx-indicator text-xs text-slate-400">保存中…</span>
+    <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">保存</button>
+  </div>
+</form>

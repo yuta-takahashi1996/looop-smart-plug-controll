@@ -1,0 +1,53 @@
+{# 画面共通の部品。{% from "components/ui.html" import card, stat, state_badge %} で利用する #}
+
+{% macro card(title, id=None) -%}
+<section {% if id %}id="{{ id }}"{% endif %} class="rounded-xl border border-slate-800 bg-slate-900 p-4">
+  {% if title %}<h2 class="mb-3 text-sm font-semibold text-slate-300">{{ title }}</h2>{% endif %}
+  {{ caller() }}
+</section>
+{%- endmacro %}
+
+{% macro stat(label, value, unit="", hint=None) -%}
+<div>
+  <dt class="text-xs text-slate-400">{{ label }}</dt>
+  <dd class="mt-1 text-xl font-semibold tabular-nums">{{ value }}<span class="ml-1 text-xs font-normal text-slate-400">{{ unit }}</span></dd>
+  {% if hint %}<dd class="text-xs text-slate-500">{{ hint }}</dd>{% endif %}
+</div>
+{%- endmacro %}
+
+{# ON/OFF、制御モード、操作元、操作結果のバッジ #}
+{% macro state_badge(value) -%}
+{%- set styles = {
+  "ON": "bg-sky-500/15 text-sky-300",
+  "OFF": "bg-emerald-500/15 text-emerald-300",
+  "GRID": "bg-sky-500/15 text-sky-300",
+  "BATTERY": "bg-emerald-500/15 text-emerald-300",
+  "SAFE": "bg-amber-500/15 text-amber-300",
+  "MANUAL": "bg-fuchsia-500/15 text-fuchsia-300",
+  "AUTO": "bg-slate-500/20 text-slate-300",
+  "SAFETY": "bg-amber-500/15 text-amber-300",
+  "SUCCESS": "bg-emerald-500/15 text-emerald-300",
+  "FAILED": "bg-rose-500/15 text-rose-300",
+  "UNCONFIRMED": "bg-amber-500/15 text-amber-300",
+  "OK": "bg-emerald-500/15 text-emerald-300",
+  "WARNING": "bg-amber-500/15 text-amber-300",
+  "ERROR": "bg-rose-500/15 text-rose-300",
+  "DONE": "bg-slate-500/20 text-slate-400",
+  "PENDING": "bg-sky-500/15 text-sky-300",
+} -%}
+{%- set labels = {
+  "ON": "ON（商用電源）",
+  "OFF": "OFF（蓄電池）",
+  "GRID": "GRID",
+  "BATTERY": "BATTERY",
+  "SUCCESS": "成功",
+  "FAILED": "失敗",
+  "UNCONFIRMED": "未確認",
+  "OK": "正常",
+  "WARNING": "警告",
+  "ERROR": "異常",
+  "DONE": "実行済",
+  "PENDING": "予定",
+} -%}
+<span class="inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium {{ styles.get(value, 'bg-slate-500/20 text-slate-300') }}">{{ labels.get(value, value) }}</span>
+{%- endmacro %}

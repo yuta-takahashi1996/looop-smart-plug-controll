@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクトの現状
 
-Phase 1（環境構築、[docs/15-roadmap.md](docs/15-roadmap.md)）完了。FastAPI アプリの骨格、設定読み込み（`app/config.py`）、SQLAlchemy + Alembic（テーブルは未作成）、Jinja2/Tailwind/HTMX の基盤、Docker Compose 構成が存在する。Web UI は仮のダッシュボード（`/`）と `/healthz` のみ。
+Phase 2（Web UI基盤、[docs/15-roadmap.md](docs/15-roadmap.md)）まで実装済み。主要画面（`/`、`/forecast`、`/schedule`、`/history`、`/settings`）、ログイン認証・CSRF対策・接続元制限（`app/api/auth.py`、`app/main.py`）、`system_settings` テーブルと設定画面からの保存（`app/models/settings.py`）がある。設定以外の画面表示は `app/services/mock_data.py` のモックデータを使っており、Phase 3 以降で実サービスへ差し替えて同モジュールを削除する。
 
 `docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。
 
@@ -19,6 +19,7 @@ scripts/tailwind.sh --watch              # テンプレート編集中の監視�
 uv run alembic upgrade head              # マイグレーション適用（DATABASE_URL、既定は data/app.db）
 uv run alembic revision --autogenerate -m "..."  # マイグレーション作成
 uv run uvicorn app.main:app --reload --port 8080 # ローカル起動（事前に tailwind.sh で CSS 生成）
+uv run python scripts/hash_password.py   # WEB_PASSWORD_HASH の生成（ログインに必須）
 
 cp .env.example .env                     # 初回のみ
 docker compose up -d --build             # http://127.0.0.1:8080
@@ -30,12 +31,14 @@ docker compose down
 - `app/static/css/app.css` は生成物のためコミットしない（Docker ビルド時に生成）。HTMX / Chart.js は `app/static/js/` に同梱している（宅内LANでCDNに依存しないため）。
 - テストは `tests/conftest.py` でインメモリ SQLite（`DATABASE_URL=sqlite://`）を使う。
 - コンテナは起動時に `alembic upgrade head` を実行してから uvicorn を起動する。
-- 共有の `Jinja2Templates` は `app/templating.py` にある。
+- 共有の `Jinja2Templates` は `app/templating.py` にある。HTMX の部分テンプレートと Jinja マクロ（`ui.html`）は `app/templates/components/` に置く。
+- 画面ルーターは `app/main.py` で `require_login` 依存付きで登録される。POST エンドポイントには `Depends(verify_csrf)` を付ける（HTMX は `<body hx-headers>` で `X-CSRF-Token` を自動送信、通常フォームは hidden の `csrf_token`）。
+- ログインには `WEB_PASSWORD_HASH` と `SESSION_SECRET` が必要（未設定時はログイン不可）。接続元は `ALLOWED_NETWORKS` で制限される。テストでは `tests/conftest.py` の `logged_in_client` fixture を使う。
 
 ## Pull Request 作成規約
 
 - タイトルは対応する Issue のタイトルに合わせる（例：Issue「Phase 1: 環境構築」→ PR「Phase 1: 環境構築」）。
-- アサインはリポジトリオーナー（`yutaman04`）にする（`gh pr create --assignee yutaman04`）。
+- アサインはリポジトリオーナー（GitHub アカウント `yuta-takahashi1996`）にする（`gh pr create --assignee yuta-takahashi1996`）。git の `user.name`（`yutaman04`）は GitHub のアカウント名ではないため指定できない。
 - 本文は以下のテンプレートに従う。対応 Issue は「概要」に `Closes #<番号>` で記載する。
 
 ```markdown

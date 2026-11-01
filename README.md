@@ -4,14 +4,18 @@ Looopでんきの市場連動型プラン（30分単位で変動する電力単�
 
 ## プロジェクトの現状
 
-Phase 1（環境構築）完了。Docker Compose で起動し、Web UI（仮のダッシュボード）にアクセスできる。詳細設計は [`docs/`](./docs) 配下を参照。
+Phase 2（Web UI基盤）まで実装済み。ログイン後、ダッシュボード・電力予報・運転スケジュール・制御履歴・設定の各画面を確認できる（設定以外はモックデータ）。詳細設計は [`docs/`](./docs) 配下を参照。
 
 ## 起動方法
 
 ```bash
 cp .env.example .env        # 初期値は DRY_RUN=true
+uv run python scripts/hash_password.py   # 出力を .env の WEB_PASSWORD_HASH に設定
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # 出力を .env の SESSION_SECRET に設定
 docker compose up -d --build
 ```
+
+Web UI へのログインには `WEB_PASSWORD_HASH` と `SESSION_SECRET` の設定が必要（ユーザー名は `WEB_USERNAME`、既定 `admin`）。アクセスできる接続元は `ALLOWED_NETWORKS` で制限する。
 
 http://127.0.0.1:8080 にアクセスする。
 

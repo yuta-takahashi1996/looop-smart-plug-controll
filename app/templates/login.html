@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}ログイン | Looop Smart Plug Controller{% endblock %}
+
+{% block header %}{% endblock %}
+
+{% block content %}
+<div class="mx-auto mt-16 max-w-sm">
+  <h1 class="mb-6 text-center text-xl font-semibold">Looop Smart Plug Controller</h1>
+
+  {% if not auth_configured %}
+  <p class="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+    WEB_PASSWORD_HASH または SESSION_SECRET が未設定のため、ログインできません。<code>.env</code> を設定してから再起動してください。
+  </p>
+  {% endif %}
+
+  {% if error %}
+  <p class="mb-4 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('login') }}" class="space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-6">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="next" value="{{ next_path }}">
+    <label class="block text-sm">
+      <span class="text-slate-400">ユーザー名</span>
+      <input name="username" autocomplete="username" required autofocus
+             class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none">
+    </label>
+    <label class="block text-sm">
+      <span class="text-slate-400">パスワード</span>
+      <input name="password" type="password" autocomplete="current-password" required
+             class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none">
+    </label>
+    <button type="submit" class="w-full rounded-md bg-sky-600 px-4 py-2 font-medium hover:bg-sky-500">ログイン</button>
+  </form>
+</div>
+{% endblock %}
