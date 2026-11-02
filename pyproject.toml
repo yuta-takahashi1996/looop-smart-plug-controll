@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.28",
     "itsdangerous>=2.2.0",
     "python-multipart>=0.0.32",
+    "cryptography>=50.0.2",
 ]
 
 [dependency-groups]

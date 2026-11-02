@@ -27,7 +27,8 @@ looop-power-controller/
 │   │   └── looop.py
 │   │
 │   ├── clients/
-│   │   └── switchbot.py
+│   │   ├── switchbot.py
+│   │   └── jackery.py
 │   │
 │   ├── services/
 │   │   ├── forecast.py

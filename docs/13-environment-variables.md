@@ -27,6 +27,13 @@ SWITCHBOT_TOKEN=
 SWITCHBOT_SECRET=
 SWITCHBOT_DEVICE_ID=
 
+# Jackery（ポータブル電源の残量取得。取得専用アカウント）
+JACKERY_ACCOUNT=
+JACKERY_PASSWORD=
+JACKERY_DEVICE_ID=
+# 残量がこの値（%）以下になったら ON に戻す
+BATTERY_MIN_PERCENT=5
+
 # Schedule
 # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
 AUTO_ENABLE=false
@@ -66,3 +73,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 ## スケジュール
 
 `AUTO_ENABLE`、運用時間、OFF時間の制限、往復効率、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ROUND_TRIP_EFFICIENCY` と `ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。
+
+## Jackery
+
+`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。`JACKERY_DEVICE_ID` は `uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。
