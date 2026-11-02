@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     switchbot_secret: SecretStr = SecretStr("")
     switchbot_device_id: str = ""
 
+    # Jackery（ポータブル電源の残量取得。取得専用アカウントを使う）
+    jackery_account: str = ""
+    jackery_password: SecretStr = SecretStr("")
+    jackery_device_id: str = ""
+
     # Schedule（運用時間・OFF時間の制限、推定節約額の算出に使う値）
     round_trip_efficiency: float = Field(default=0.85, gt=0, le=1)
     max_continuous_off_minutes: int = Field(default=120, ge=0)

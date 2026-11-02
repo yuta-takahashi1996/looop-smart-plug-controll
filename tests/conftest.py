@@ -10,6 +10,9 @@ os.environ["APP_ENV"] = "test"  # スケジューラーを起動しない
 os.environ["SWITCHBOT_TOKEN"] = ""
 os.environ["SWITCHBOT_SECRET"] = ""
 os.environ["SWITCHBOT_DEVICE_ID"] = ""
+os.environ["JACKERY_ACCOUNT"] = ""
+os.environ["JACKERY_PASSWORD"] = ""
+os.environ["JACKERY_DEVICE_ID"] = ""
 os.environ["WEB_USERNAME"] = "admin"
 # パスワード "test-password" の scrypt ハッシュ（固定値。テストのたびに計算しない）
 os.environ["WEB_PASSWORD_HASH"] = (
