@@ -1,0 +1,6 @@
+{# 予報の手動再取得の結果（refresh_result: "ok" / "error"） #}
+{% if refresh_result == "ok" %}
+<p class="mt-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2 text-sm text-emerald-200" role="status">料金予報を再取得しました。</p>
+{% elif refresh_result == "error" %}
+<p class="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-sm text-rose-200" role="alert">料金予報を取得できませんでした。詳細はダッシュボードの「お知らせ・エラー」を確認してください。</p>
+{% endif %}

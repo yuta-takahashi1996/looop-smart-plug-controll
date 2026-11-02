@@ -1,0 +1,9 @@
+{# 単価の表示切り替え（view: 現在の表示モード、return_to: 切り替え後に戻るパス） #}
+<form method="post" action="{{ url_for('set_price_view') }}" class="inline-flex rounded-lg border border-slate-800 bg-slate-950 p-0.5 text-xs" aria-label="単価の表示切り替え">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="hidden" name="next" value="{{ return_to }}">
+  {% for value, label in [("energy", "電源単価"), ("billing", "請求単価")] %}
+  <button type="submit" name="view" value="{{ value }}" aria-pressed="{{ 'true' if view == value else 'false' }}"
+          class="rounded-md px-3 py-1 {{ 'bg-slate-700 text-white' if view == value else 'text-slate-400 hover:text-slate-200' }}">{{ label }}</button>
+  {% endfor %}
+</form>
