@@ -1,8 +1,9 @@
 """SQLite への接続とセッション管理。"""
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import DateTime, Dialect, TypeDecorator, create_engine, event
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -12,6 +13,26 @@ from app.config import get_settings
 
 class Base(DeclarativeBase):
     pass
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """タイムゾーン付き日時を UTC に揃えて保存し、UTC として読み出す。
+
+    SQLite はタイムゾーンを保持しないため、比較・並び替えが崩れないよう UTC に統一する。
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("タイムゾーンなしの日時は保存できません")
+        return value.astimezone(UTC).replace(tzinfo=None)
+
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        return value.replace(tzinfo=UTC) if value is not None else None
 
 
 def create_db_engine(database_url: str) -> Engine:
