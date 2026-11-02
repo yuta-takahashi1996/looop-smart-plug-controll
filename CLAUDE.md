@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクトの現状
 
-Phase 2（Web UI基盤、[docs/15-roadmap.md](docs/15-roadmap.md)）まで実装済み。主要画面（`/`、`/forecast`、`/schedule`、`/history`、`/settings`）、ログイン認証・CSRF対策・接続元制限（`app/api/auth.py`、`app/main.py`）、`system_settings` テーブルと設定画面からの保存（`app/models/settings.py`）がある。設定以外の画面表示は `app/services/mock_data.py` のモックデータを使っており、Phase 3 以降で実サービスへ差し替えて同モジュールを削除する。
+Phase 3（外部API連携、[docs/15-roadmap.md](docs/15-roadmap.md)）まで実装済み。
+- 料金予報：`app/providers/looop.py` がでんき予報の `/api/prices` から電源料金単価を取得し、`app/services/forecast.py` が検証・保存する。請求単価は「電源料金単価＋`price_adjustments` の加算額」で都度算出する（[docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.5）。
+- SwitchBot：`app/clients/switchbot.py`（状態取得・turnOn/turnOff）。`app/services/controller.py` の `PlugMonitor` はプラグ状態の読み取りのみで、コマンドはまだ送信しない（Control Service 本体は Phase 6）。実機の確認は `scripts/switchbot_check.py`。
+- 定期ジョブ：`app/services/scheduler.py`（APScheduler）。`APP_ENV=test` では起動しない。
+- 画面：電力情報・料金グラフ・プラグ状態・お知らせ／エラー・加算額の設定は実データ。制御予定・制御履歴・集計は `app/services/mock_data.py` のモックで、Phase 4〜6 で置き換えて同モジュールを削除する。
 
 `docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。
 
@@ -19,7 +23,9 @@ scripts/tailwind.sh --watch              # テンプレート編集中の監視�
 uv run alembic upgrade head              # マイグレーション適用（DATABASE_URL、既定は data/app.db）
 uv run alembic revision --autogenerate -m "..."  # マイグレーション作成
 uv run uvicorn app.main:app --reload --port 8080 # ローカル起動（事前に tailwind.sh で CSS 生成）
-uv run python scripts/hash_password.py   # WEB_PASSWORD_HASH の生成（ログインに必須）
+uv run python scripts/hash_password.py   # WEB_PASSWORD_HASH の生成（ログインに必須。端末から実行）
+uv run python scripts/switchbot_check.py devices|status          # SwitchBot の確認（読み取りのみ）
+uv run python scripts/switchbot_check.py verify-onoff --confirm  # 実機の ON/OFF 確認（プラグが実際に切り替わる）
 
 cp .env.example .env                     # 初回のみ
 docker compose up -d --build             # http://127.0.0.1:8080
@@ -29,7 +35,8 @@ docker compose down
 
 - 依存の追加は `uv add <pkg>`（開発用は `uv add --dev <pkg>`）で行い、`uv.lock` もコミットする。
 - `app/static/css/app.css` は生成物のためコミットしない（Docker ビルド時に生成）。HTMX / Chart.js は `app/static/js/` に同梱している（宅内LANでCDNに依存しないため）。
-- テストは `tests/conftest.py` でインメモリ SQLite（`DATABASE_URL=sqlite://`）を使う。
+- テストは `tests/conftest.py` でインメモリ SQLite（`DATABASE_URL=sqlite://`）を使う。外部通信はしない（Looop は `FakeProvider` を `app.state.forecast_provider` に差し替え、HTTP クライアントは `httpx.MockTransport` を使う）。
+- DB の日時は `UTCDateTime`（`app/repositories/database.py`）で UTC に揃えて保存し、テンプレートでは `|local("%H:%M")` フィルターで表示用のタイムゾーンへ変換する。
 - コンテナは起動時に `alembic upgrade head` を実行してから uvicorn を起動する。
 - 共有の `Jinja2Templates` は `app/templating.py` にある。HTMX の部分テンプレートと Jinja マクロ（`ui.html`）は `app/templates/components/` に置く。
 - 画面ルーターは `app/main.py` で `require_login` 依存付きで登録される。POST エンドポイントには `Depends(verify_csrf)` を付ける（HTMX は `<body hx-headers>` で `X-CSRF-Token` を自動送信、通常フォームは hidden の `csrf_token`）。
@@ -80,7 +87,7 @@ Web UI（手動操作） ──────────────→  Control 
 重要な設計ルール：**自動制御・手動制御（Web UI経由）のいずれも単一のControl Serviceを経由する**。これにより、スケジューラーとユーザー操作が競合することを防いでいる。
 
 `app/` 配下の各モジュールの責務（予定）：
-- `providers/looop.py` — Looopの料金予報ページを取得する（公式APIの利用可否は未確認のため [docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.2 で調査が必要）。取得方式が変更された場合に差し替えやすいよう独立させる。
+- `providers/looop.py` — でんき予報ページが利用する `GET /api/prices?select_area=01` から電源料金単価を取得する（公式APIはない。[docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.2）。お知らせ一覧の取得も担う。取得方式が変更された場合に差し替えやすいよう独立させる。
 - `services/forecast.py` — 取得した料金データを信頼する前に検証・正規化する（エリア一致、日付の正しさ、48コマ全取得、連続性、重複・欠損なし）。
 - `services/optimizer.py` — 料金予報と設定値から、固定の閾値ではなく価格差（下記「経済性」参照）に基づいてON/OFF計画を生成する。
 - `services/scheduler.py` — 定期ジョブ（料金再取得、スケジュール実行）のタイミングを管理する。
@@ -116,7 +123,7 @@ Web UI（手動操作） ──────────────→  Control 
 
 ## データモデル（SQLite、[docs/10-database.md](docs/10-database.md)）
 
-6テーブル構成：`forecast_prices`（30分単位の料金予報）、`control_schedules`（予定されたON/OFF計画。理由と推定節約額を含む）、`control_logs`（実際の全操作履歴。`AUTO`/`MANUAL`/`SAFETY`のいずれかに分類し、操作前・要求・確認後の状態を記録）、`system_settings`（key/value。**秘匿情報は保存しない** — 認証情報は環境変数のみで管理する）、`system_events`、`daily_summaries`。
+7テーブル構成：`forecast_prices`（30分単位の電源料金単価）、`price_adjustments`（請求単価への加算額。適用期間付き）、`control_schedules`（予定されたON/OFF計画。理由と推定節約額を含む）、`control_logs`（実際の全操作履歴。`AUTO`/`MANUAL`/`SAFETY`のいずれかに分類し、操作前・要求・確認後の状態を記録）、`system_settings`（key/value。**秘匿情報は保存しない** — 認証情報は環境変数のみで管理する）、`system_events`、`daily_summaries`。
 
 ## Dry Runモード
 

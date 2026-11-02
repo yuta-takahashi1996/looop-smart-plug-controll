@@ -55,3 +55,9 @@ LOG_LEVEL=INFO
 `WEB_PASSWORD_HASH` または `SESSION_SECRET` が未設定の場合、Web UI にはログインできない（認証なしでは動作させない）。
 
 Web UI から変更した制御条件（運用時間、最適化パラメータ）は `system_settings` に保存され、環境変数の値より優先される。環境変数の値は未保存の項目の初期値として使う。
+
+## SwitchBot
+
+`SWITCHBOT_TOKEN` / `SWITCHBOT_SECRET` は SwitchBot アプリの「プロフィール → 設定 → アプリバージョンを10回タップ → 開発者向けオプション」で取得する。`SWITCHBOT_DEVICE_ID` は `uv run python scripts/switchbot_check.py devices` で確認できる。未設定の場合、プラグ状態は「未確認」と表示し、SwitchBot API を呼び出さない。
+
+`APP_ENV=test` の場合、スケジューラー（予報取得・プラグ状態確認などの定期ジョブ）は起動しない。
