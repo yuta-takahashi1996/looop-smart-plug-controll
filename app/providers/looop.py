@@ -4,7 +4,8 @@
 `GET /api/prices?select_area=<エリアコード>` を利用する（ログイン不要）。
 
 レスポンスは {"0": 昨日, "1": 今日, "2": 明日, "label": [...], "timelist": [...]} の形で、
-各日に price_data（48 コマの電源料金単価）が入る。明日分が未公開の場合は disabled_flg、
+各日に price_data（48 コマの電源料金単価）と level（でんき予報の区分。-0.5：でんき日和、
+0：なし、0.5：でんき注意報、1：でんき警報）が入る。明日分が未公開の場合は disabled_flg、
 データ欠損時は defrect_flg が付く。レスポンスに日付は含まれないため、取得時点の日本時間の
 日付から対象日を決める。日付の境界をまたぐ取り違えを防ぐため、0 時前後は取得しない。
 """
@@ -16,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.providers.base import DayPrices, FetchResult, ForecastFetchError, Notice
+from app.providers.base import DayPrices, FetchResult, ForecastFetchError, ForecastLevel, Notice
 
 BASE_URL = "https://looop-denki.com"
 SOURCE = "looop-denki-forecast"
@@ -37,6 +38,9 @@ AREA_CODES = {
 
 # レスポンスのキーと、取得日からの日数
 _DAY_KEYS = {"1": 0, "2": 1}
+
+# level の値とでんき予報の区分（unit_price.js の描画処理より）
+_LEVELS = {-0.5: ForecastLevel.GOOD, 0: ForecastLevel.NORMAL, 0.5: ForecastLevel.ADVISORY, 1: ForecastLevel.WARNING}
 
 # 日付境界の前後この時間は取得しない（サーバー側の「今日」と取り違えないため）
 MIDNIGHT_GUARD = timedelta(minutes=5)
@@ -80,10 +84,12 @@ class LooopForecastProvider:
             if not isinstance(day_data, dict) or "disabled_flg" in day_data or "defrect_flg" in day_data:
                 continue
             prices = day_data.get("price_data")
+            levels = day_data.get("level")
             days.append(
                 DayPrices(
                     day=started.date() + timedelta(days=offset),
                     prices=list(prices) if isinstance(prices, list) else [],
+                    levels=[_to_level(v) for v in levels] if isinstance(levels, list) else [],
                 )
             )
         return FetchResult(area=area, fetched_at=finished, days=days, source=SOURCE)
@@ -99,6 +105,12 @@ class LooopForecastProvider:
             url = str(httpx.URL(BASE_URL).join(html.unescape(match["url"])))
             notices.append(Notice(url=url, title=html.unescape(match["title"]).strip()))
         return notices
+
+
+def _to_level(value: object) -> ForecastLevel | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return _LEVELS.get(value)
 
 
 def _ensure_outside_midnight(now: datetime) -> None:

@@ -25,7 +25,7 @@ from app.models.settings import (
     record_event,
     resolve_events,
 )
-from app.providers.base import DayPrices, FetchResult, ForecastFetchError, ForecastProvider
+from app.providers.base import DayPrices, FetchResult, ForecastFetchError, ForecastLevel, ForecastProvider
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,9 @@ class ForecastValidationError(Exception):
 class PriceSlot:
     start: datetime
     end: datetime
-    energy_price: float  # 電源料金単価（取得値）
-    billing_price: float  # 請求単価 ＝ 電源料金単価 ＋ 加算額
+    energy_price: float  # 電源料金単価（取得値）。制御の判断はこの単価で行う
+    billing_price: float  # 請求単価 ＝ 電源料金単価 ＋ 加算額（表示用）
+    level: ForecastLevel
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,8 @@ class DayForecast:
     fetched_at: datetime | None
 
 
-def validate_day(day_prices: DayPrices) -> list[float]:
-    """48 コマ揃っていること、数値として妥当なことを確認する（docs/06 §6.4）。"""
+def validate_day(day_prices: DayPrices) -> list[tuple[float, ForecastLevel]]:
+    """48 コマ揃っていること、単価が数値として妥当なこと、区分が解釈できることを確認する（docs/06 §6.4）。"""
     prices = day_prices.prices
     if len(prices) != SLOTS_PER_DAY:
         raise ForecastValidationError(
@@ -75,7 +76,15 @@ def validate_day(day_prices: DayPrices) -> list[float]:
         if not MIN_PRICE <= value <= MAX_PRICE:
             raise ForecastValidationError(f"{day_prices.day} の {index + 1} コマ目が範囲外です: {value}")
         validated.append(float(value))
-    return validated
+    levels = day_prices.levels
+    if len(levels) != SLOTS_PER_DAY:
+        raise ForecastValidationError(
+            f"{day_prices.day} のでんき予報の区分が {len(levels)} 件です（{SLOTS_PER_DAY} 件必要）"
+        )
+    for index, level in enumerate(levels):
+        if level is None:
+            raise ForecastValidationError(f"{day_prices.day} の {index + 1} コマ目のでんき予報の区分を解釈できません")
+    return list(zip(validated, levels, strict=True))
 
 
 def _slot_starts(day: date, tz: ZoneInfo) -> list[datetime]:
@@ -92,7 +101,7 @@ def save_result(session: Session, result: FetchResult, tz: ZoneInfo) -> list[dat
         try:
             if day_prices.day < today:
                 raise ForecastValidationError(f"過去日（{day_prices.day}）のデータは保存しません")
-            prices = validate_day(day_prices)
+            slots = validate_day(day_prices)
         except ForecastValidationError as exc:
             logger.warning("forecast validation failed: %s", exc)
             record_event(session, EventLevel.ERROR, EventCategory.FORECAST, f"料金データの検証に失敗しました：{exc}")
@@ -109,13 +118,14 @@ def save_result(session: Session, result: FetchResult, tz: ZoneInfo) -> list[dat
                 )
             )
         }
-        for start, price in zip(starts, prices, strict=True):
+        for start, (price, level) in zip(starts, slots, strict=True):
             row = existing.get(start.astimezone(UTC))
             if row is None:
                 row = ForecastPrice(area=result.area, slot_start=start)
                 session.add(row)
             row.slot_end = start + SLOT
             row.energy_price = price
+            row.level = level
             row.fetched_at = result.fetched_at
             row.source = result.source
         session.commit()
@@ -210,6 +220,7 @@ def get_day_forecast(session: Session, area: str, day: date, tz: ZoneInfo) -> Da
             end=row.slot_end.astimezone(tz),
             energy_price=row.energy_price,
             billing_price=round(row.energy_price + total, 2),
+            level=row.level,
         )
         for row in rows
     ]

@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.main import app  # noqa: E402
-from app.providers.base import DayPrices, FetchResult, ForecastFetchError, Notice  # noqa: E402
+from app.providers.base import DayPrices, FetchResult, ForecastFetchError, ForecastLevel, Notice  # noqa: E402
 from app.repositories.database import Base, SessionLocal, engine  # noqa: E402
 
 TEST_PASSWORD = "test-password"
@@ -36,6 +36,22 @@ JST = ZoneInfo("Asia/Tokyo")
 def sample_prices(base: float = 10.0) -> list[float]:
     """0:00 から順に 0.5 円ずつ上がる 48 コマの単価。"""
     return [round(base + index * 0.5, 2) for index in range(48)]
+
+
+def sample_levels() -> list[ForecastLevel]:
+    """2:00〜3:30 がでんき日和、17:00〜19:00 が注意報、19:00〜20:00 が警報。"""
+    levels = [ForecastLevel.NORMAL] * 48
+    for index in range(4, 8):
+        levels[index] = ForecastLevel.GOOD
+    for index in range(34, 38):
+        levels[index] = ForecastLevel.ADVISORY
+    for index in range(38, 40):
+        levels[index] = ForecastLevel.WARNING
+    return levels
+
+
+def day_prices(day: date, prices: list, levels: list | None = None) -> DayPrices:
+    return DayPrices(day, prices, sample_levels() if levels is None else levels)
 
 
 class FakeProvider:
@@ -55,8 +71,8 @@ class FakeProvider:
         days = self.days
         if days is None:
             days = [
-                DayPrices(now.date(), sample_prices(10.0)),
-                DayPrices(now.date() + timedelta(days=1), sample_prices(20.0)),
+                day_prices(now.date(), sample_prices(10.0)),
+                day_prices(now.date() + timedelta(days=1), sample_prices(20.0)),
             ]
         return FetchResult(area=area, fetched_at=now, days=days, source="fake")
 

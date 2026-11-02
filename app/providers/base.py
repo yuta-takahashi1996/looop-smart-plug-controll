@@ -4,7 +4,8 @@
 取得元ごとの実装はこのインターフェースに合わせる。
 """
 
-from dataclasses import dataclass
+import enum
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Protocol
 
@@ -17,12 +18,25 @@ class ForecastFetchError(Exception):
         self.retryable = retryable
 
 
+class ForecastLevel(enum.StrEnum):
+    """でんき予報の区分（docs/06 §6.2）。注意報・警報のコマが OFF スケジュールの候補になる。"""
+
+    GOOD = "GOOD"  # でんき日和
+    NORMAL = "NORMAL"
+    ADVISORY = "ADVISORY"  # でんき注意報
+    WARNING = "WARNING"  # でんき警報
+
+
 @dataclass(frozen=True)
 class DayPrices:
-    """1日分の 30 分単位の電源料金単価（円/kWh、税込）。prices[0] が 0:00〜0:30。"""
+    """1日分の 30 分単位の電源料金単価（円/kWh、税込）とでんき予報の区分。[0] が 0:00〜0:30。
+
+    levels の None は取得元の値を解釈できなかったコマ（検証で不合格にする）。
+    """
 
     day: date
     prices: list[float]
+    levels: list[ForecastLevel | None] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

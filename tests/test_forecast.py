@@ -8,18 +8,21 @@ from sqlalchemy.orm import Session
 from app.models.forecast import AdjustmentCategory, ForecastPrice, PriceAdjustment
 from app.models.settings import EventCategory, SystemEvent, unresolved_events
 from app.providers import looop
-from app.providers.base import DayPrices, FetchResult, ForecastFetchError, Notice
+from app.providers.base import DayPrices, FetchResult, ForecastFetchError, ForecastLevel, Notice
 from app.providers.looop import LooopForecastProvider
 from app.services import forecast as forecast_service
-from tests.conftest import JST, FakeProvider, sample_prices, today
+from tests.conftest import JST, FakeProvider, day_prices, sample_levels, sample_prices, today
 
 # --- Looop Provider ---
+
+
+LOOOP_LEVELS = [0] * 4 + [-0.5] * 4 + [0] * 26 + [0.5] * 4 + [1] * 2 + [0] * 8  # sample_levels() と同じ並び
 
 
 def _looop_response(**overrides: object) -> dict:
     body: dict = {
         "0": {"price_data": sample_prices(5.0), "level": [0] * 48},
-        "1": {"price_data": sample_prices(10.0), "level": [0] * 48},
+        "1": {"price_data": sample_prices(10.0), "level": LOOOP_LEVELS},
         "2": {"price_data": sample_prices(20.0), "level": [0] * 48},
         "label": [],
         "timelist": [],
@@ -51,7 +54,17 @@ def test_looop_maps_today_and_tomorrow(daytime: None) -> None:
     assert requests[0].url.params["select_area"] == "01"
     assert [d.day for d in result.days] == [today(), today() + timedelta(days=1)]
     assert result.days[0].prices == sample_prices(10.0)
+    assert result.days[0].levels == sample_levels()
     assert result.days[1].prices == sample_prices(20.0)
+    assert result.days[1].levels == [ForecastLevel.NORMAL] * 48
+
+
+def test_looop_marks_unknown_levels(daytime: None) -> None:
+    levels = [0] * 46 + [2, "0.5"]
+    body = _looop_response(**{"1": {"price_data": sample_prices(), "level": levels}})
+    result = _provider(lambda r: httpx.Response(200, json=body)).fetch("hokkaido")
+
+    assert result.days[0].levels[-2:] == [None, None]
 
 
 def test_looop_skips_unpublished_tomorrow(daytime: None) -> None:
@@ -133,13 +146,28 @@ def test_looop_parses_notices() -> None:
 )
 def test_validate_day_rejects_invalid_data(prices: list, message: str) -> None:
     with pytest.raises(forecast_service.ForecastValidationError) as exc_info:
-        forecast_service.validate_day(DayPrices(today(), prices))
+        forecast_service.validate_day(day_prices(today(), prices))
     assert message in str(exc_info.value)
 
 
 def test_validate_day_accepts_integers() -> None:
     prices = [10] * 48
-    assert forecast_service.validate_day(DayPrices(today(), prices)) == [10.0] * 48
+    validated = forecast_service.validate_day(day_prices(today(), prices))
+    assert [price for price, _ in validated] == [10.0] * 48
+    assert [level for _, level in validated] == sample_levels()
+
+
+@pytest.mark.parametrize(
+    ("levels", "message"),
+    [
+        (sample_levels()[:47], "区分が 47 件"),
+        ([], "区分が 0 件"),
+        (sample_levels()[:47] + [None], "48 コマ目のでんき予報の区分を解釈できません"),
+    ],
+)
+def test_validate_day_rejects_invalid_levels(levels: list, message: str) -> None:
+    with pytest.raises(forecast_service.ForecastValidationError, match=message):
+        forecast_service.validate_day(day_prices(today(), sample_prices(), levels))
 
 
 # --- 保存 ---
@@ -154,7 +182,7 @@ def _count(session: Session) -> int:
 
 
 def test_save_result_stores_48_continuous_slots(session: Session) -> None:
-    saved = forecast_service.save_result(session, _result(DayPrices(today(), sample_prices())), JST)
+    saved = forecast_service.save_result(session, _result(day_prices(today(), sample_prices())), JST)
 
     assert saved == [today()]
     rows = session.scalars(select(ForecastPrice).order_by(ForecastPrice.slot_start)).all()
@@ -167,8 +195,8 @@ def test_save_result_stores_48_continuous_slots(session: Session) -> None:
 
 
 def test_save_result_overwrites_existing_slots(session: Session) -> None:
-    forecast_service.save_result(session, _result(DayPrices(today(), sample_prices(10.0))), JST)
-    forecast_service.save_result(session, _result(DayPrices(today(), sample_prices(30.0))), JST)
+    forecast_service.save_result(session, _result(day_prices(today(), sample_prices(10.0))), JST)
+    forecast_service.save_result(session, _result(day_prices(today(), sample_prices(30.0))), JST)
 
     assert _count(session) == 48
     assert session.scalar(select(func.min(ForecastPrice.energy_price))) == 30.0
@@ -177,7 +205,7 @@ def test_save_result_overwrites_existing_slots(session: Session) -> None:
 def test_save_result_skips_invalid_day_and_keeps_valid_one(session: Session) -> None:
     saved = forecast_service.save_result(
         session,
-        _result(DayPrices(today(), sample_prices()), DayPrices(today() + timedelta(days=1), sample_prices()[:10])),
+        _result(day_prices(today(), sample_prices()), day_prices(today() + timedelta(days=1), sample_prices()[:10])),
         JST,
     )
 
@@ -189,7 +217,7 @@ def test_save_result_skips_invalid_day_and_keeps_valid_one(session: Session) -> 
 
 def test_save_result_rejects_past_day(session: Session) -> None:
     saved = forecast_service.save_result(
-        session, _result(DayPrices(today() - timedelta(days=1), sample_prices())), JST
+        session, _result(day_prices(today() - timedelta(days=1), sample_prices())), JST
     )
 
     assert saved == []
@@ -266,7 +294,7 @@ def test_billing_price_adds_adjustments_effective_on_the_day(session: Session) -
         ]
     )
     session.commit()
-    forecast_service.save_result(session, _result(DayPrices(day, sample_prices(10.0))), JST)
+    forecast_service.save_result(session, _result(day_prices(day, sample_prices(10.0))), JST)
 
     forecast = forecast_service.get_day_forecast(session, "hokkaido", day, JST)
 
@@ -275,10 +303,11 @@ def test_billing_price_adds_adjustments_effective_on_the_day(session: Session) -
     assert forecast.slots[0].billing_price == pytest.approx(10.0 + 10.74)
     assert forecast.slots[0].start == datetime.combine(day, datetime.min.time(), tzinfo=JST)
     assert len(forecast.slots) == 48
+    assert [slot.level for slot in forecast.slots] == sample_levels()
 
 
 def test_billing_price_without_adjustments_equals_energy_price(session: Session) -> None:
-    forecast_service.save_result(session, _result(DayPrices(today(), sample_prices(10.0))), JST)
+    forecast_service.save_result(session, _result(day_prices(today(), sample_prices(10.0))), JST)
 
     forecast = forecast_service.get_day_forecast(session, "hokkaido", today(), JST)
 
@@ -295,7 +324,7 @@ def test_day_forecast_is_empty_when_not_fetched(session: Session) -> None:
 
 
 def test_other_area_is_not_mixed(session: Session) -> None:
-    result = FetchResult(area="tokyo", fetched_at=datetime.now(JST), days=[DayPrices(today(), sample_prices())], source="t")
+    result = FetchResult(area="tokyo", fetched_at=datetime.now(JST), days=[day_prices(today(), sample_prices())], source="t")
     forecast_service.save_result(session, result, JST)
 
     assert forecast_service.get_day_forecast(session, "hokkaido", today(), JST).slots == []

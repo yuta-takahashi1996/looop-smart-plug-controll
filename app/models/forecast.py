@@ -1,7 +1,7 @@
 """料金予報（forecast_prices）と請求単価への加算額（price_adjustments）。
 
-Looop の でんき予報 から取得できるのは 30 分ごとの電源料金単価のみのため、
-請求単価は「電源料金単価 ＋ 対象日に有効な加算額の合計」で算出する。
+制御の判断には でんき予報 の電源料金単価と区分（注意報・警報）を使う。
+請求単価（電源料金単価 ＋ 対象日に有効な加算額の合計）は、実際の支払単価の目安として表示するためだけに使う。
 加算額はサービス料金・託送従量料金相当額・再エネ賦課金・国の補助金（値引き）などで、
 改定や補助金の期間に合わせて適用期間付きで登録する。
 """
@@ -12,6 +12,7 @@ from datetime import date, datetime
 from sqlalchemy import Date, Enum, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.providers.base import ForecastLevel
 from app.repositories.database import Base, UTCDateTime
 
 
@@ -25,6 +26,10 @@ class ForecastPrice(Base):
     slot_end: Mapped[datetime] = mapped_column(UTCDateTime)
     # 電源料金単価（円/kWh、税込）。取得値をそのまま保存し、請求単価は都度算出する
     energy_price: Mapped[float] = mapped_column(Float)
+    # でんき予報の区分（でんき日和・注意報・警報）
+    level: Mapped[ForecastLevel] = mapped_column(
+        Enum(ForecastLevel, native_enum=False), server_default=ForecastLevel.NORMAL.value
+    )
     fetched_at: Mapped[datetime] = mapped_column(UTCDateTime)
     source: Mapped[str] = mapped_column(String(64))
 
