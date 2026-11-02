@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from ipaddress import ip_address
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import PlainTextResponse, Response
@@ -19,8 +20,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api import auth, dashboard, forecast, history, schedule
 from app.api import settings as settings_api
+from app.clients.switchbot import SwitchBotClient
 from app.config import get_settings
-from app.repositories.database import get_session
+from app.models.forecast import ADJUSTMENT_CATEGORY_LABELS
+from app.providers.looop import LooopForecastProvider
+from app.repositories.database import SessionLocal, get_session
+from app.services.controller import PlugMonitor
+from app.services.scheduler import Jobs, create_scheduler
 from app.templating import templates
 
 logger = logging.getLogger(__name__)
@@ -38,7 +44,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("starting (env=%s, dry_run=%s)", settings.app_env, settings.dry_run)
     if not settings.auth_configured:
         logger.warning("WEB_PASSWORD_HASH / SESSION_SECRET が未設定のため、Web UI にログインできません")
+
+    # 画面とスケジューラーで共有する外部連携。テストでは app.state を差し替える
+    app.state.forecast_provider = LooopForecastProvider()
+    app.state.plug_monitor = PlugMonitor(
+        SwitchBotClient(
+            settings.switchbot_token.get_secret_value(),
+            settings.switchbot_secret.get_secret_value(),
+            settings.switchbot_device_id,
+        ),
+        SessionLocal,
+    )
+    if not app.state.plug_monitor.configured:
+        logger.warning("SwitchBot の認証情報が未設定のため、プラグ状態を確認できません")
+
+    scheduler = None
+    if settings.app_env != "test":
+        jobs = Jobs(settings, app.state.forecast_provider, app.state.plug_monitor, SessionLocal)
+        scheduler = create_scheduler(settings, jobs)
+        scheduler.start()
     yield
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
     logger.info("shutting down")
 
 
@@ -81,6 +108,9 @@ async def login_required_handler(request: Request, exc: auth.LoginRequired) -> R
 
 templates.env.globals["csrf_token"] = auth.get_csrf_token
 templates.env.globals["dry_run"] = settings.dry_run
+templates.env.globals["adjustment_labels"] = ADJUSTMENT_CATEGORY_LABELS
+# DB の日時（UTC）を表示用のタイムゾーンへ変換する
+templates.env.filters["local"] = lambda value, fmt: value.astimezone(ZoneInfo(settings.tz)).strftime(fmt)
 
 app.include_router(auth.router)
 for module in (dashboard, forecast, schedule, history, settings_api):
