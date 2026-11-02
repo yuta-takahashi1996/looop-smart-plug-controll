@@ -23,6 +23,7 @@
 | slot_start | 対象コマ開始日時 |
 | slot_end | 対象コマ終了日時 |
 | energy_price | 電源料金単価（取得値。請求単価は price_adjustments から都度算出） |
+| level | でんき予報の区分（GOOD：でんき日和 / NORMAL / ADVISORY：注意報 / WARNING：警報） |
 | fetched_at | 取得日時 |
 | source | データ取得元 |
 
@@ -37,8 +38,12 @@
 | start_at | 制御開始日時 |
 | end_at | 制御終了日時 |
 | target_state | ON/OFF |
+| source_level | 生成元の区分（ADVISORY：注意報 / WARNING：警報） |
+| enabled | 有効・無効（有効なスケジュールのみ実行する） |
+| enabled_by | 有効・無効を決めた主体（AUTO：生成時の自動判定 / MANUAL：ユーザー） |
+| manually_modified | 手動変更済み（有効・無効の切り替えまたは時間変更。再生成で上書きしない） |
 | reason | 制御理由 |
-| estimated_saving | 推定節約額 |
+| estimated_saving | 推定節約額（電源単価で算出） |
 | status | 実行状態 |
 
 ## 10.3 control_logs

@@ -27,8 +27,9 @@ SWITCHBOT_TOKEN=
 SWITCHBOT_SECRET=
 SWITCHBOT_DEVICE_ID=
 
-# Optimization
-MIN_SAVING_SPREAD=20
+# Schedule
+# でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
+AUTO_ENABLE=false
 ROUND_TRIP_EFFICIENCY=0.85
 
 MAX_CONTINUOUS_OFF_MINUTES=120
@@ -61,3 +62,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 `SWITCHBOT_TOKEN` / `SWITCHBOT_SECRET` は SwitchBot アプリの「プロフィール → 設定 → アプリバージョンを10回タップ → 開発者向けオプション」で取得する。`SWITCHBOT_DEVICE_ID` は `uv run python scripts/switchbot_check.py devices` で確認できる。未設定の場合、プラグ状態は「未確認」と表示し、SwitchBot API を呼び出さない。
 
 `APP_ENV=test` の場合、スケジューラー（予報取得・プラグ状態確認などの定期ジョブ）は起動しない。
+
+## スケジュール
+
+`AUTO_ENABLE`、運用時間、OFF時間の制限、往復効率、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ROUND_TRIP_EFFICIENCY` と `ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。

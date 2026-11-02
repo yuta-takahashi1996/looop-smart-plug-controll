@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## プロジェクトの現状
 
 Phase 3（外部API連携、[docs/15-roadmap.md](docs/15-roadmap.md)）まで実装済み。
-- 料金予報：`app/providers/looop.py` がでんき予報の `/api/prices` から電源料金単価を取得し、`app/services/forecast.py` が検証・保存する。請求単価は「電源料金単価＋`price_adjustments` の加算額」で都度算出する（[docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.5）。
+- 料金予報：`app/providers/looop.py` がでんき予報の `/api/prices` から電源料金単価を取得し、`app/services/forecast.py` が検証・保存する。でんき予報の区分（日和・注意報・警報）も `level` として保存する。請求単価は「電源料金単価＋`price_adjustments` の加算額」で都度算出し、表示にのみ使う（[docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.5）。
 - SwitchBot：`app/clients/switchbot.py`（状態取得・turnOn/turnOff）。`app/services/controller.py` の `PlugMonitor` はプラグ状態の読み取りのみで、コマンドはまだ送信しない（Control Service 本体は Phase 6）。実機の確認は `scripts/switchbot_check.py`。
 - 定期ジョブ：`app/services/scheduler.py`（APScheduler）。`APP_ENV=test` では起動しない。
 - 画面：電力情報・料金グラフ・プラグ状態・お知らせ／エラー・加算額の設定は実データ。制御予定・制御履歴・集計は `app/services/mock_data.py` のモックで、Phase 4〜6 で置き換えて同モジュールを削除する。
@@ -89,7 +89,7 @@ Web UI（手動操作） ──────────────→  Control 
 `app/` 配下の各モジュールの責務（予定）：
 - `providers/looop.py` — でんき予報ページが利用する `GET /api/prices?select_area=01` から電源料金単価を取得する（公式APIはない。[docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.2）。お知らせ一覧の取得も担う。取得方式が変更された場合に差し替えやすいよう独立させる。
 - `services/forecast.py` — 取得した料金データを信頼する前に検証・正規化する（エリア一致、日付の正しさ、48コマ全取得、連続性、重複・欠損なし）。
-- `services/optimizer.py` — 料金予報と設定値から、固定の閾値ではなく価格差（下記「経済性」参照）に基づいてON/OFF計画を生成する。
+- `services/optimizer.py` — でんき予報の注意報・警報と設定値から OFF スケジュールを生成し、有効・無効を判定する（下記「スケジュールの考え方」参照）。
 - `services/scheduler.py` — 定期ジョブ（料金再取得、スケジュール実行）のタイミングを管理する。
 - `services/controller.py` — Control Service本体。AUTO/MANUAL/SAFETYのすべての状態変更を一元管理する唯一の経路。
 - `services/safety.py` — データや通信が信頼できない場合のフェイルセーフ動作を担保する。
@@ -106,20 +106,14 @@ Web UI（手動操作） ──────────────→  Control 
 自動制御再開時: MANUAL → SAFE
 ```
 
-中核となる安全方針（[docs/14-safety.md](docs/14-safety.md) §14.1）：**節電よりも安定した電源供給を優先する**。具体的には、料金予報の取得失敗やデータ欠損時は新規の自動OFFを禁止する（不正確なデータでOFFを計画しない）。ON/OFFコマンド送信後は必ず状態を再取得し期待状態と照合する（照合できなければ成功扱いにしない）。スケジュール失効または運用終了時刻を過ぎた場合はON復帰を強制する。
+中核となる安全方針（[docs/14-safety.md](docs/14-safety.md) §14.1）：**節電よりも安定した電源供給を優先する**。具体的には、料金予報の取得失敗やデータ欠損時は新規の自動OFFを禁止する（不正確なデータでOFFを計画しない）。ON/OFFコマンド送信後は必ず状態を再取得し期待状態と照合する（照合できなければ成功扱いにしない）。スケジュール失効または運用終了時刻を過ぎた場合はON復帰を強制する（有効なでんき警報のスケジュール中を除く）。
 
-## 経済性の考え方（[docs/07-control-logic.md](docs/07-control-logic.md) §7.2）
+## スケジュールの考え方（[docs/07-control-logic.md](docs/07-control-logic.md) §7.1・§7.4〜7.6）
 
-```
-推定削減額 =
-    （高額時間帯に回避できる電力購入費）
-    − （充電に必要な電力購入費）
-    − （推定充放電コスト）
-
-必要充電電力量 = 供給電力量 ÷ 往復効率
-```
-
-初期リリースでは蓄電池の残量をハードウェアから取得しない。残量不明を前提に、OFF継続時間を保守的に制限する（`MAX_CONTINUOUS_OFF_MINUTES`、`MAX_DAILY_OFF_MINUTES`、`MIN_SWITCH_INTERVAL_MINUTES` 等の設定値で制御）。
+- OFF スケジュールは、でんき予報の区分（`forecast_prices.level`）の注意報・警報が連続する区間から生成する。独自の価格差による最適化はしない。
+- でんき警報のスケジュールは常に有効、でんき注意報は `AUTO_ENABLE` が有効なときのみ自動で有効。それ以外はユーザーが個別に有効にしない限り実行しない。ユーザーは個別に有効・無効を切り替え、他のスケジュールと矛盾しない範囲で時間を変更できる。手動変更は再生成で上書きしない。
+- 制御の判断・推定節約額は**電源単価**で行う。請求単価（電源単価＋`price_adjustments`）は画面表示専用（電源単価／請求単価の切り替え表示）。
+- 初期リリースでは蓄電池の残量をハードウェアから取得しない。注意報のスケジュールは `MAX_CONTINUOUS_OFF_MINUTES`、`MAX_DAILY_OFF_MINUTES`、運用時間で保守的に制限する。警報のスケジュールはこれらの制限を超えてよい（`MIN_SWITCH_INTERVAL_MINUTES` は適用）。
 
 ## データモデル（SQLite、[docs/10-database.md](docs/10-database.md)）
 
