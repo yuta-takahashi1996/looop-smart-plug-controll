@@ -26,6 +26,7 @@ uv run uvicorn app.main:app --reload --port 8080 # ローカル起動（事前�
 uv run python scripts/hash_password.py   # WEB_PASSWORD_HASH の生成（ログインに必須。端末から実行）
 uv run python scripts/switchbot_check.py devices|status          # SwitchBot の確認（読み取りのみ）
 uv run python scripts/switchbot_check.py verify-onoff --confirm  # 実機の ON/OFF 確認（プラグが実際に切り替わる）
+uv run python scripts/jackery_check.py [devices|status|raw]      # ポータブル電源の残量確認（読み取りのみ）
 
 cp .env.example .env                     # 初回のみ
 docker compose up -d --build             # http://127.0.0.1:8080
@@ -113,7 +114,8 @@ Web UI（手動操作） ──────────────→  Control 
 - OFF スケジュールは、でんき予報の区分（`forecast_prices.level`）の注意報・警報が連続する区間から生成する。独自の価格差による最適化はしない。
 - でんき警報のスケジュールは常に有効、でんき注意報は `AUTO_ENABLE` が有効なときのみ自動で有効。それ以外はユーザーが個別に有効にしない限り実行しない。ユーザーは個別に有効・無効を切り替え、他のスケジュールと矛盾しない範囲で時間を変更できる。手動変更は再生成で上書きしない。
 - 制御の判断・推定節約額は**電源単価**で行う。請求単価（電源単価＋`price_adjustments`）は画面表示専用（電源単価／請求単価の切り替え表示）。
-- 初期リリースでは蓄電池の残量をハードウェアから取得しない。注意報のスケジュールは `MAX_CONTINUOUS_OFF_MINUTES`、`MAX_DAILY_OFF_MINUTES`、運用時間で保守的に制限する。警報のスケジュールはこれらの制限を超えてよい（`MIN_SWITCH_INTERVAL_MINUTES` は適用）。
+- ポータブル電源（Jackery 1000 New）の残量は Jackery クラウドの非公式 API から取得する（`app/clients/jackery.py`、[docs/08-switchbot-api.md](docs/08-switchbot-api.md) §8.4）。OFF 中に残量が `BATTERY_MIN_PERCENT`（初期値 5%）以下になったら、でんき警報中でも ON に戻す（[docs/07-control-logic.md](docs/07-control-logic.md) §7.7、Phase 6 で実装）。取得専用アカウントを使う（同時ログイン1台の制限のため）。
+- 残量が取得できない場合に備え、注意報のスケジュールは `MAX_CONTINUOUS_OFF_MINUTES`、`MAX_DAILY_OFF_MINUTES`、運用時間で保守的に制限する。警報のスケジュールはこれらの制限を超えてよい（`MIN_SWITCH_INTERVAL_MINUTES` は適用）。
 
 ## データモデル（SQLite、[docs/10-database.md](docs/10-database.md)）
 
@@ -130,7 +132,7 @@ app/
 ├── main.py, config.py
 ├── api/            # dashboard.py, forecast.py, control.py, history.py, settings.py
 ├── providers/       # base.py, looop.py
-├── clients/          # switchbot.py
+├── clients/          # switchbot.py, jackery.py
 ├── services/         # forecast.py, optimizer.py, scheduler.py, controller.py, safety.py
 ├── models/            # forecast.py, schedule.py, settings.py
 ├── repositories/      # database.py
