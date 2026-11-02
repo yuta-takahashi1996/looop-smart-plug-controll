@@ -19,6 +19,26 @@ router = APIRouter()
 # 翌日分の予報が公開される目安（でんき予報ページの注記より）
 TOMORROW_PUBLISH_HOUR = 16
 
+# 単価の表示モード。制御の判断は常に電源料金単価で行い、請求単価は実際の支払単価の目安として表示する
+PriceView = Literal["energy", "billing"]
+PRICE_VIEW_SESSION_KEY = "price_view"
+PRICE_VIEW_LABELS: dict[str, str] = {"energy": "電源単価", "billing": "請求単価"}
+
+# 表示モードの切り替え・再取得の後に戻ってよいパス
+_RETURN_PATHS = ("/", "/forecast", "/forecast?day=today", "/forecast?day=tomorrow")
+
+
+def get_price_view(request: Request) -> PriceView:
+    return "billing" if request.session.get(PRICE_VIEW_SESSION_KEY) == "billing" else "energy"
+
+
+def price_of(slot: forecast_service.PriceSlot, view: PriceView) -> float:
+    return slot.billing_price if view == "billing" else slot.energy_price
+
+
+def _safe_return(next_path: str, default: str = "/forecast") -> str:
+    return next_path if next_path in _RETURN_PATHS else default
+
 
 @router.get("/forecast", response_class=HTMLResponse, name="forecast")
 def forecast(
@@ -32,10 +52,12 @@ def forecast(
     now = datetime.now(tz)
     target = now.date() + timedelta(days=1 if day == "tomorrow" else 0)
     data = forecast_service.get_day_forecast(session, settings.looop_area, target, tz)
+    view = get_price_view(request)
     chart = {
+        "label": PRICE_VIEW_LABELS[view],
+        "prices": [price_of(slot, view) for slot in data.slots],
+        "levels": [slot.level.value for slot in data.slots],
         "labels": [slot.start.strftime("%H:%M") for slot in data.slots],
-        "billing": [slot.billing_price for slot in data.slots],
-        "energy": [slot.energy_price for slot in data.slots],
         # 当日表示のときのみ、現在時刻のコマ位置（小数）を渡す
         "nowIndex": (now.hour * 60 + now.minute) / 30 if day == "today" else None,
     }
@@ -48,6 +70,8 @@ def forecast(
             "target": target,
             "forecast": data,
             "chart": chart,
+            "view": view,
+            "prices": chart["prices"],
             "errors": errors,
             "before_publish": day == "tomorrow" and now.hour < TOMORROW_PUBLISH_HOUR,
             "refresh_result": refresh,
@@ -70,6 +94,15 @@ def refresh_forecast(
         result = "ok"
     except ForecastFetchError:
         result = "error"
-    target = next if next in ("/", "/forecast", "/forecast?day=today", "/forecast?day=tomorrow") else "/forecast"
+    target = _safe_return(next)
     separator = "&" if "?" in target else "?"
     return RedirectResponse(f"{target}{separator}refresh={result}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/price-view", name="set_price_view", dependencies=[Depends(verify_csrf)])
+def set_price_view(
+    request: Request, view: Annotated[PriceView, Form()], next: Annotated[str, Form()] = "/"
+) -> RedirectResponse:
+    """単価の表示モード（電源単価／請求単価）を切り替える。表示のみで、制御の判断には影響しない。"""
+    request.session[PRICE_VIEW_SESSION_KEY] = view
+    return RedirectResponse(_safe_return(next, "/"), status_code=status.HTTP_303_SEE_OTHER)

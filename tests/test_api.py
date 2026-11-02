@@ -28,7 +28,6 @@ PAGES = [
 VALID_SETTINGS = {
     "operation_start": "08:30",
     "operation_end": "17:30",
-    "min_saving_spread": "25",
     "round_trip_efficiency": "80",
     "max_continuous_off_minutes": "90",
     "max_daily_off_minutes": "150",
@@ -189,7 +188,7 @@ def test_dashboard_status_partial(logged_in_client: TestClient) -> None:
     response = logged_in_client.get("/partials/dashboard/status", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
-    assert "電力情報（請求単価）" in response.text
+    assert "電力情報" in response.text
     assert "<html" not in response.text
 
 
@@ -240,7 +239,7 @@ def test_settings_accepts_csrf_header(logged_in_client: TestClient) -> None:
         ({"operation_start": "18:00", "operation_end": "09:00"}, "運用開始時刻は運用終了時刻より前"),
         ({"max_continuous_off_minutes": "200", "max_daily_off_minutes": "100"}, "最大連続OFF時間は"),
         ({"round_trip_efficiency": "120"}, "充放電往復効率"),
-        ({"min_saving_spread": "abc"}, "最低節約単価差"),
+        ({"estimated_average_power_w": "abc"}, "想定平均負荷"),
     ],
 )
 def test_settings_rejects_invalid_values(
@@ -293,26 +292,68 @@ def _add_adjustment(client: TestClient, **fields: str) -> Response:
     )
 
 
+def _set_view(client: TestClient, view: str, next_path: str = "/") -> Response:
+    return client.post(
+        "/price-view", data={"view": view, "next": next_path, "csrf_token": csrf_token(client)}, follow_redirects=False
+    )
+
+
 def test_dashboard_without_forecast(logged_in_client: TestClient) -> None:
     text = logged_in_client.get("/").text
 
     assert "本日の料金予報が未取得です" in text
-    assert "加算額が未登録" in text
+    assert "加算額が未登録" not in text  # 電源単価表示（既定）では加算額の警告を出さない
+
+    _set_view(logged_in_client, "billing")
+    assert "加算額が未登録" in logged_in_client.get("/").text
 
 
-def test_refresh_forecast_then_dashboard_shows_billing_price(
-    logged_in_client: TestClient, provider: FakeProvider
-) -> None:
+def test_dashboard_shows_energy_price_by_default(logged_in_client: TestClient, provider: FakeProvider) -> None:
     _fetch(logged_in_client)
     _add_adjustment(logged_in_client, amount="7.5")
 
     text = logged_in_client.get("/").text
 
     assert provider.calls == 1
+    assert "現在の電源単価" in text
+    assert "請求単価の目安" in text
+    assert "制御の判断は電源単価で行います" in text
+    assert "本日の料金予報が未取得です" not in text
+
+
+def test_price_view_toggle_switches_to_billing(logged_in_client: TestClient) -> None:
+    _fetch(logged_in_client)
+    _add_adjustment(logged_in_client, amount="7.5")
+
+    response = _set_view(logged_in_client, "billing", "/forecast?day=tomorrow")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/forecast?day=tomorrow"
+    text = logged_in_client.get("/").text
     assert "現在の請求単価" in text
     assert "加算額 7.50" in text
-    assert "加算額が未登録" not in text
-    assert "本日の料金予報が未取得です" not in text
+    assert "請求単価（30分単位）" in logged_in_client.get("/forecast").text
+    assert "この日の加算額の内訳" in logged_in_client.get("/forecast").text
+
+    _set_view(logged_in_client, "energy")
+    assert "現在の電源単価" in logged_in_client.get("/").text
+
+
+def test_price_view_toggle_validation(logged_in_client: TestClient) -> None:
+    assert _set_view(logged_in_client, "billing", "https://evil.example.com/").headers["location"] == "/"
+    assert _set_view(logged_in_client, "unknown").status_code == 422
+    assert logged_in_client.post("/price-view", data={"view": "billing"}).status_code == 403
+
+
+def test_forecast_page_shows_levels(logged_in_client: TestClient) -> None:
+    _fetch(logged_in_client)
+
+    text = logged_in_client.get("/forecast").text
+
+    assert "注意報・警報のコマ" in text
+    assert "17:00" in text and "でんき注意報" in text
+    assert "19:00" in text and "でんき警報" in text
+    assert '"levels": ["NORMAL"' in text
 
 
 def test_refresh_forecast_failure_is_reported(logged_in_client: TestClient, provider: FakeProvider) -> None:
@@ -352,7 +393,8 @@ def test_forecast_page_with_data(logged_in_client: TestClient) -> None:
     for day in ("today", "tomorrow"):
         text = logged_in_client.get(f"/forecast?day={day}").text
         assert 'id="forecast-data"' in text
-        assert "請求単価（30分単位）" in text
+        assert "電源単価（30分単位）" in text
+        assert "この日の加算額の内訳" not in text
 
 
 def test_forecast_page_without_data(logged_in_client: TestClient) -> None:

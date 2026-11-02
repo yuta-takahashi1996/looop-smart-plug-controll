@@ -1,25 +1,43 @@
-{% from "components/ui.html" import card, stat, state_badge, mock_badge %}
+{% from "components/ui.html" import card, stat, state_badge, mock_badge, level_badge %}
 {%- set p = prices -%}
 {%- set c = control -%}
 <div class="grid gap-4 lg:grid-cols-3">
-  {% call card("電力情報（請求単価）") %}
+  {% call card(None) %}
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-sm font-semibold text-slate-300">電力情報</h2>
+    {% with view=p.view, return_to="/" %}{% include "components/price_view_toggle.html" %}{% endwith %}
+  </div>
+  {% set unit_label = "請求単価" if p.view == "billing" else "電源単価" %}
   {% if p.current %}
   <dl class="grid grid-cols-2 gap-4">
-    {{ stat("現在の請求単価", "%.2f"|format(p.current.billing_price), "円/kWh", "電源料金単価 %.2f ＋ 加算額 %.2f"|format(p.current.energy_price, p.adjustment_total)) }}
-    {{ stat("蓄電池利用時の実効単価", "%.2f"|format(p.battery_effective_price), "円/kWh", "当日最安 ÷ 往復効率") }}
-    {{ stat("次の30分コマ", "%.2f"|format(p.next.billing_price) if p.next else "—", "円/kWh" if p.next else "") }}
+    {% if p.view == "billing" %}
+    {{ stat("現在の請求単価", "%.2f"|format(p.current_price), "円/kWh", "電源単価 %.2f ＋ 加算額 %.2f"|format(p.current.energy_price, p.adjustment_total)) }}
+    {% else %}
+    {{ stat("現在の電源単価", "%.2f"|format(p.current_price), "円/kWh", "請求単価の目安 %.2f"|format(p.current.billing_price)) }}
+    {% endif %}
+    {{ stat("蓄電池利用時の実効単価", "%.2f"|format(p.battery_effective_price), "円/kWh", "当日最安の" ~ unit_label ~ " ÷ 往復効率") }}
+    {{ stat("次の30分コマ", "%.2f"|format(p.next_price) if p.next_price is not none else "—", "円/kWh" if p.next_price is not none else "") }}
     {{ stat("当日の最高 / 最低", "%.1f / %.1f"|format(p.day_max, p.day_min), "円/kWh") }}
   </dl>
+  <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+    <span>でんき予報：</span>
+    {% if p.current.level in ("GOOD", "ADVISORY", "WARNING") %}現在 {{ level_badge(p.current.level) }}{% endif %}
+    {% if p.next_alert %}
+    <span>次の注意報・警報 {{ p.next_alert.start.strftime("%H:%M") }}〜</span>{{ level_badge(p.next_alert.level) }}
+    {% elif p.current.level not in ("ADVISORY", "WARNING") %}
+    <span>本日これからの注意報・警報はありません</span>
+    {% endif %}
+  </div>
   {% else %}
   <p class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">本日の料金予報が未取得です。取得できるまで新規の自動OFFは行いません。</p>
   {% endif %}
-  {% if not p.has_adjustments %}
+  {% if p.view == "billing" and not p.has_adjustments %}
   <p class="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200">
-    加算額が未登録のため、請求単価が電源料金単価と同じ値になっています。<a href="{{ url_for('settings') }}#adjustments" class="underline">設定画面</a>で登録してください。
+    加算額が未登録のため、請求単価が電源単価と同じ値になっています。<a href="{{ url_for('settings') }}#adjustments" class="underline">設定画面</a>で登録してください。
   </p>
   {% endif %}
   <p class="mt-4 text-xs text-slate-500">
-    予報の最終取得：{{ p.fetched_at.strftime("%m/%d %H:%M") if p.fetched_at else "未取得" }}
+    予報の最終取得：{{ p.fetched_at.strftime("%m/%d %H:%M") if p.fetched_at else "未取得" }}・制御の判断は電源単価で行います
   </p>
   {% endcall %}
 

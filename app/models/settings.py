@@ -29,7 +29,6 @@ class ControlSettings(BaseModel):
 
     operation_start: time
     operation_end: time
-    min_saving_spread: float = Field(ge=0)
     round_trip_efficiency: float = Field(gt=0, le=1)
     max_continuous_off_minutes: int = Field(ge=0)
     max_daily_off_minutes: int = Field(ge=0)

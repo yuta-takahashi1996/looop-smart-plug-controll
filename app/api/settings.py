@@ -22,7 +22,6 @@ router = APIRouter()
 FIELDS: list[tuple[str, str, str, dict[str, Any]]] = [
     ("operation_start", "運用開始時刻", "", {"type": "time"}),
     ("operation_end", "運用終了時刻", "", {"type": "time"}),
-    ("min_saving_spread", "最低節約単価差", "円/kWh", {"type": "number", "min": 0, "step": 0.1}),
     ("round_trip_efficiency", "充放電往復効率", "%", {"type": "number", "min": 1, "max": 100, "step": 1}),
     ("max_continuous_off_minutes", "最大連続OFF時間", "分", {"type": "number", "min": 0, "step": 1}),
     ("max_daily_off_minutes", "1日の最大OFF時間", "分", {"type": "number", "min": 0, "step": 1}),
@@ -37,7 +36,6 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
     return {
         "operation_start": data.operation_start.strftime("%H:%M"),
         "operation_end": data.operation_end.strftime("%H:%M"),
-        "min_saving_spread": f"{data.min_saving_spread:g}",
         "round_trip_efficiency": f"{data.round_trip_efficiency * 100:g}",
         "max_continuous_off_minutes": str(data.max_continuous_off_minutes),
         "max_daily_off_minutes": str(data.max_daily_off_minutes),

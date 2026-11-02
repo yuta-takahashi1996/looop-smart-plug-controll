@@ -1,11 +1,29 @@
-// 電力予報画面の料金グラフ（Chart.js）。請求単価と電源料金単価を表示する
+// 電力予報画面の料金グラフ（Chart.js）。選択中の単価と、でんき予報の区分（背景色）を表示する
 (() => {
   const data = JSON.parse(document.getElementById("forecast-data").textContent);
   const canvas = document.getElementById("forecast-chart");
 
-  // 現在時刻を縦線で描画する
+  const LEVEL_COLORS = {
+    GOOD: "rgba(16, 185, 129, 0.16)",
+    ADVISORY: "rgba(251, 191, 36, 0.22)",
+    WARNING: "rgba(244, 63, 94, 0.28)",
+  };
+
+  // でんき予報の区分を背景色で、現在時刻を縦線で描画する
   const overlays = {
     id: "forecastOverlays",
+    beforeDatasetsDraw(chart) {
+      const { ctx, chartArea, scales } = chart;
+      const step = scales.x.getPixelForValue(1) - scales.x.getPixelForValue(0);
+      ctx.save();
+      data.levels.forEach((level, i) => {
+        const color = LEVEL_COLORS[level];
+        if (!color) return;
+        ctx.fillStyle = color;
+        ctx.fillRect(scales.x.getPixelForValue(i) - step / 2, chartArea.top, step, chartArea.bottom - chartArea.top);
+      });
+      ctx.restore();
+    },
     afterDatasetsDraw(chart) {
       if (data.nowIndex === null) return;
       const { ctx, chartArea, scales } = chart;
@@ -28,25 +46,14 @@
       labels: data.labels,
       datasets: [
         {
-          label: "請求単価",
-          data: data.billing,
+          label: data.label,
+          data: data.prices,
           borderColor: "#38bdf8",
-          backgroundColor: "rgba(56, 189, 248, 0.15)",
+          backgroundColor: "rgba(56, 189, 248, 0.12)",
           stepped: "middle",
           pointRadius: 0,
           pointHoverRadius: 4,
           fill: true,
-        },
-        {
-          label: "電源料金単価",
-          data: data.energy,
-          borderColor: "#94a3b8",
-          borderDash: [4, 4],
-          borderWidth: 1.5,
-          stepped: "middle",
-          pointRadius: 0,
-          pointHoverRadius: 3,
-          fill: false,
         },
       ],
     },
@@ -58,6 +65,8 @@
         tooltip: {
           callbacks: {
             label: (item) => `${item.dataset.label}：${item.parsed.y.toFixed(2)} 円/kWh`,
+            afterLabel: (item) =>
+              ({ GOOD: "でんき日和", ADVISORY: "でんき注意報", WARNING: "でんき警報" })[data.levels[item.dataIndex]] || "",
           },
         },
       },

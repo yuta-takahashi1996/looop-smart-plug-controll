@@ -20,6 +20,18 @@
 <span class="ml-1 inline-block whitespace-nowrap rounded border border-dashed border-slate-600 px-1.5 text-[10px] font-normal text-slate-400">{{ label }}</span>
 {%- endmacro %}
 
+{# でんき予報の区分のバッジ（NORMAL は表示しない） #}
+{% macro level_badge(level) -%}
+{%- set styles = {
+  "GOOD": ("でんき日和", "bg-emerald-500/15 text-emerald-300"),
+  "ADVISORY": ("でんき注意報", "bg-amber-500/20 text-amber-300"),
+  "WARNING": ("でんき警報", "bg-rose-500/20 text-rose-300"),
+} -%}
+{%- if level in styles -%}
+<span class="inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium {{ styles[level][1] }}">{{ styles[level][0] }}</span>
+{%- endif -%}
+{%- endmacro %}
+
 {# ON/OFF、制御モード、操作元、操作結果のバッジ #}
 {% macro state_badge(value) -%}
 {%- set styles = {
