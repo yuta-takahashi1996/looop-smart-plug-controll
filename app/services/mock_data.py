@@ -1,7 +1,8 @@
-"""Phase 2（Web UI基盤）用のモックデータ。
+"""制御予定・制御履歴・集計のモックデータ。
 
-Looop 予報取得（Phase 3）や最適化エンジン（Phase 4）が実装されるまでの間、
-画面表示を確認するためのデータを返す。値は日付から決定的に生成する。
+料金予報とプラグ状態は Phase 3 で実データへ切り替え済み。制御予定（Phase 4）、
+制御履歴・推定節約額（Phase 5 以降）が実装されるまでの間、画面表示の確認用に使う。
+モックの料金は実際の予報とは無関係で、日付から決定的に生成する。
 実データへ切り替えたら、このモジュールは削除する。
 """
 
@@ -69,19 +70,13 @@ class ControlLogEntry:
 
 
 @dataclass(frozen=True)
-class DashboardSummary:
-    current_price: float
-    current_effective_price: float  # 往復効率を考慮した蓄電池利用時の実効単価
-    next_price: float
-    day_max_price: float
-    day_min_price: float
-    forecast_fetched_at: datetime | None
+class ControlSummary:
+    """ダッシュボードの制御情報・集計情報のうち、まだ実装されていない部分。"""
+
     auto_control_enabled: bool
     mode: ControlMode
-    plug_state: PlugState
     next_switch: ScheduleEntry | None
     last_log: ControlLogEntry | None
-    system_status: Literal["OK", "WARNING", "ERROR"]
     today_saving: float
     month_saving: float
     today_switch_count: int
@@ -213,36 +208,21 @@ def get_history(settings: Settings, day: date) -> list[ControlLogEntry]:
     return sorted((log for log in logs if log.executed_at <= current), key=lambda log: log.executed_at, reverse=True)
 
 
-def get_dashboard_summary(settings: Settings) -> DashboardSummary:
+def get_control_summary(settings: Settings) -> ControlSummary:
     current = now(settings)
     forecast = get_forecast(settings, current.date())
     index = (current.hour * 60 + current.minute) // 30
-    slot = forecast.slots[index]
-    next_slot = forecast.slots[index + 1] if index + 1 < 48 else get_forecast(settings, current.date() + timedelta(days=1)).slots[0]
-    min_price = min(s.price for s in forecast.slots)
-
     schedule = get_schedule(settings, current.date())
-    next_switch = next((e for e in schedule if e.start > current), None)
     history = get_history(settings, current.date())
     done_off = [e for e in schedule if e.target_state == "OFF" and e.start <= current]
-    off_minutes = sum(int((min(e.end, current) - e.start).total_seconds() // 60) for e in done_off)
     today_saving = round(sum(e.estimated_saving for e in done_off), 1)
-
-    return DashboardSummary(
-        current_price=slot.price,
-        current_effective_price=round(min_price / settings.round_trip_efficiency, 2),
-        next_price=next_slot.price,
-        day_max_price=max(s.price for s in forecast.slots),
-        day_min_price=min_price,
-        forecast_fetched_at=forecast.fetched_at,
+    return ControlSummary(
         auto_control_enabled=True,
-        mode="BATTERY" if slot.planned_state == "OFF" else "GRID",
-        plug_state=slot.planned_state,
-        next_switch=next_switch,
+        mode="BATTERY" if forecast.slots[index].planned_state == "OFF" else "GRID",
+        next_switch=next((e for e in schedule if e.start > current), None),
         last_log=history[0] if history else None,
-        system_status="OK",
         today_saving=today_saving,
         month_saving=round(today_saving + 18.4 * (current.day - 1), 1),
         today_switch_count=sum(1 for log in history if log.source == "AUTO"),
-        today_off_minutes=off_minutes,
+        today_off_minutes=sum(int((min(e.end, current) - e.start).total_seconds() // 60) for e in done_off),
     )

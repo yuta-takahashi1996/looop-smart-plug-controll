@@ -15,6 +15,11 @@
 </div>
 {%- endmacro %}
 
+{# まだ実データではない項目に付けるバッジ #}
+{% macro mock_badge(label="モック") -%}
+<span class="ml-1 inline-block whitespace-nowrap rounded border border-dashed border-slate-600 px-1.5 text-[10px] font-normal text-slate-400">{{ label }}</span>
+{%- endmacro %}
+
 {# ON/OFF、制御モード、操作元、操作結果のバッジ #}
 {% macro state_badge(value) -%}
 {%- set styles = {
@@ -32,11 +37,13 @@
   "OK": "bg-emerald-500/15 text-emerald-300",
   "WARNING": "bg-amber-500/15 text-amber-300",
   "ERROR": "bg-rose-500/15 text-rose-300",
+  "INFO": "bg-slate-500/20 text-slate-300",
   "DONE": "bg-slate-500/20 text-slate-400",
   "PENDING": "bg-sky-500/15 text-sky-300",
 } -%}
 {%- set labels = {
   "ON": "ON（商用電源）",
+  "INFO": "情報",
   "OFF": "OFF（蓄電池）",
   "GRID": "GRID",
   "BATTERY": "BATTERY",

@@ -1,9 +1,19 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
+from sqlalchemy import select
 
 from app.api.auth import hash_password, verify_password
+from app.clients.switchbot import PlugStatus
 from app.main import app
-from tests.conftest import TEST_PASSWORD, csrf_token
+from app.models.forecast import PriceAdjustment
+from app.models.settings import SystemEvent
+from app.providers.base import ForecastFetchError, Notice
+from app.services.controller import PlugSnapshot
+from app.services.forecast import check_price_notices
+from tests.conftest import TEST_PASSWORD, FakeProvider, csrf_token
 
 PAGES = [
     ("/", "ダッシュボード"),
@@ -179,7 +189,7 @@ def test_dashboard_status_partial(logged_in_client: TestClient) -> None:
     response = logged_in_client.get("/partials/dashboard/status", headers={"HX-Request": "true"})
 
     assert response.status_code == 200
-    assert "現在の電源料金単価" in response.text
+    assert "電力情報（請求単価）" in response.text
     assert "<html" not in response.text
 
 
@@ -262,3 +272,194 @@ def test_settings_post_requires_login(client: TestClient) -> None:
     )
 
     assert response.status_code == 303
+
+
+# --- 実データ（料金予報・加算額・プラグ状態・お知らせ） ---
+
+
+def _fetch(client: TestClient) -> None:
+    response = client.post(
+        "/forecast/refresh", data={"csrf_token": csrf_token(client), "next": "/"}, follow_redirects=False
+    )
+    assert response.headers["location"] == "/?refresh=ok"
+
+
+def _add_adjustment(client: TestClient, **fields: str) -> Response:
+    data = {"category": "SERVICE", "amount": "7.0", "effective_from": "2020-01-01", "effective_to": "", "note": ""}
+    return client.post(
+        "/settings/adjustments",
+        data={**data, **fields, "csrf_token": csrf_token(client)},
+        follow_redirects=False,
+    )
+
+
+def test_dashboard_without_forecast(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/").text
+
+    assert "本日の料金予報が未取得です" in text
+    assert "加算額が未登録" in text
+
+
+def test_refresh_forecast_then_dashboard_shows_billing_price(
+    logged_in_client: TestClient, provider: FakeProvider
+) -> None:
+    _fetch(logged_in_client)
+    _add_adjustment(logged_in_client, amount="7.5")
+
+    text = logged_in_client.get("/").text
+
+    assert provider.calls == 1
+    assert "現在の請求単価" in text
+    assert "加算額 7.50" in text
+    assert "加算額が未登録" not in text
+    assert "本日の料金予報が未取得です" not in text
+
+
+def test_refresh_forecast_failure_is_reported(logged_in_client: TestClient, provider: FakeProvider) -> None:
+    provider.errors = [ForecastFetchError("料金予報の取得に失敗しました: timeout")]
+
+    response = logged_in_client.post(
+        "/forecast/refresh",
+        data={"csrf_token": csrf_token(logged_in_client), "next": "/forecast?day=today"},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == "/forecast?day=today&refresh=error"
+    text = logged_in_client.get(response.headers["location"]).text
+    assert "料金予報を取得できませんでした" in text
+    assert "timeout" in text
+    assert "異常" in logged_in_client.get("/").text
+
+
+def test_refresh_forecast_rejects_external_next(logged_in_client: TestClient) -> None:
+    response = logged_in_client.post(
+        "/forecast/refresh",
+        data={"csrf_token": csrf_token(logged_in_client), "next": "https://evil.example.com/"},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == "/forecast?refresh=ok"
+
+
+def test_refresh_forecast_requires_csrf(logged_in_client: TestClient, provider: FakeProvider) -> None:
+    assert logged_in_client.post("/forecast/refresh", data={"next": "/"}).status_code == 403
+    assert provider.calls == 0
+
+
+def test_forecast_page_with_data(logged_in_client: TestClient) -> None:
+    _fetch(logged_in_client)
+
+    for day in ("today", "tomorrow"):
+        text = logged_in_client.get(f"/forecast?day={day}").text
+        assert 'id="forecast-data"' in text
+        assert "請求単価（30分単位）" in text
+
+
+def test_forecast_page_without_data(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/forecast?day=today").text
+
+    assert "未取得" in text
+    assert 'id="forecast-data"' not in text
+
+
+def test_adjustment_create_and_delete(logged_in_client: TestClient, session) -> None:
+    assert _add_adjustment(logged_in_client, category="SUBSIDY", amount="-4.5", note="国の支援").status_code == 303
+
+    text = logged_in_client.get("/settings").text
+    assert "補助金・値引き" in text
+    assert "-4.50 円/kWh" in text
+    assert "国の支援" in text
+
+    adjustment_id = session.scalars(select(PriceAdjustment.id)).one()
+    response = logged_in_client.post(
+        f"/settings/adjustments/{adjustment_id}/delete",
+        data={"csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "国の支援" not in logged_in_client.get("/settings").text
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"effective_from": "2026-12-31", "effective_to": "2026-12-01"}, "適用終了日は適用開始日以降"),
+        ({"amount": "abc"}, "金額"),
+        ({"amount": "150"}, "金額"),
+        ({"category": "UNKNOWN"}, "種類"),
+        ({"effective_from": ""}, "適用開始日"),
+    ],
+)
+def test_adjustment_validation(logged_in_client: TestClient, fields: dict[str, str], message: str) -> None:
+    response = _add_adjustment(logged_in_client, **fields)
+
+    assert response.status_code == 422
+    assert message in response.text
+
+
+def test_adjustment_requires_csrf(logged_in_client: TestClient) -> None:
+    response = logged_in_client.post(
+        "/settings/adjustments", data={"category": "SERVICE", "amount": "7", "effective_from": "2026-01-01"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_price_notice_can_be_resolved(logged_in_client: TestClient, provider: FakeProvider, session) -> None:
+    check_price_notices(session, provider)  # 初回（既存のお知らせなし）
+    provider.notices = [
+        Notice("https://looop-denki.com/home/news/1/", "【重要】国の「電気・ガス料金支援」に関するお知らせ"),
+        Notice("https://looop-denki.com/home/news/2/", "【重要】託送料金変更に伴う料金改定のお知らせ"),
+    ]
+    check_price_notices(session, provider)
+
+    text = logged_in_client.get("/").text
+    assert "電気・ガス料金支援" in text
+    assert "警告" in text
+
+    event_id = session.scalars(
+        select(SystemEvent.id).where(SystemEvent.message.contains("料金支援"))
+    ).one()
+    logged_in_client.post(f"/events/{event_id}/resolve", data={"csrf_token": csrf_token(logged_in_client)})
+    text = logged_in_client.get("/").text
+    assert "電気・ガス料金支援" not in text
+    assert "託送料金変更" in text
+
+    logged_in_client.post("/events/resolve-price-notices", data={"csrf_token": csrf_token(logged_in_client)})
+    assert "託送料金変更" not in logged_in_client.get("/").text
+
+
+def test_errors_cannot_be_resolved_manually(logged_in_client: TestClient, provider: FakeProvider, session) -> None:
+    provider.errors = [ForecastFetchError("timeout")]
+    logged_in_client.post("/forecast/refresh", data={"csrf_token": csrf_token(logged_in_client), "next": "/"})
+    event_id = session.scalars(select(SystemEvent.id)).one()
+
+    logged_in_client.post(f"/events/{event_id}/resolve", data={"csrf_token": csrf_token(logged_in_client)})
+
+    session.expire_all()
+    assert session.get(SystemEvent, event_id).resolved_at is None
+
+
+def test_dashboard_shows_plug_status(logged_in_client: TestClient) -> None:
+    class Monitor:
+        def snapshot(self) -> PlugSnapshot:
+            return PlugSnapshot(
+                status=PlugStatus(power="OFF", device_type="Plug Mini (JP)", raw={}),
+                checked_at=datetime.now(UTC),
+                error=None,
+            )
+
+    app.state.plug_monitor = Monitor()
+
+    text = logged_in_client.get("/").text
+
+    assert "OFF（蓄電池）" in text
+    assert "確認" in text
+
+
+def test_dashboard_shows_unconfirmed_plug_status(logged_in_client: TestClient) -> None:
+    # 状態を確認する前（またはSwitchBotが未設定・取得失敗）は「未確認」と表示し、ON/OFF を推測しない
+    text = logged_in_client.get("/").text
+
+    assert "未確認" in text
+    assert "ON（商用電源）" not in text.split("プラグの状態")[1].split("</dd>")[0]
