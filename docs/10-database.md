@@ -146,7 +146,7 @@
 | repeat_type | ONCE（1回のみ）/ DAILY（毎日）/ WEEKLY（曜日指定） |
 | target_date | 対象日（ONCE のみ。表示用のタイムゾーンの日付） |
 | weekdays | 対象の曜日（WEEKLY のみ。月〜日の組） |
-| start_time / end_time | 開始・終了時刻（表示用のタイムゾーンの時刻。30分単位） |
+| start_time / end_time | 開始・終了時刻（表示用のタイムゾーンの時刻。30分単位。end_time の 00:00 は 24:00） |
 | enabled | 有効・無効（無効なルールは展開しない） |
 | created_at / updated_at | 作成・更新日時 |
 

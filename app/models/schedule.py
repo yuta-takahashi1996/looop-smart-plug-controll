@@ -1,18 +1,32 @@
 """制御スケジュール（control_schedules）と制御履歴（control_logs）。docs/10-database.md §10.2・§10.3。
 
-スケジュールはでんき予報の注意報・警報から生成した OFF の予定で、有効（enabled）なものだけを実行する。
+スケジュールはでんき予報の注意報・警報から生成した OFF の予定と、任意スケジュールのルール（schedule_rules、
+docs/10 §10.9）から展開した ON／OFF の予定で、有効（enabled）なものだけを実行する。
 手動で変更（有効・無効の切り替え、時間変更）したものは manually_modified とし、再生成で上書きしない。
 制御履歴は Control Service が行った（Dry Run では行うはずだった）すべての状態変更の記録。
 """
 
 import enum
-from datetime import date, datetime
+from datetime import date, datetime, time
 
-from sqlalchemy import Boolean, Date, Enum, Float, Integer, String, Text
+from sqlalchemy import Boolean, Date, Enum, Float, Integer, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.providers.base import ForecastLevel
 from app.repositories.database import Base, UTCDateTime
+
+
+class ScheduleSource(enum.StrEnum):
+    """スケジュールの生成元。ADVISORY / WARNING は ForecastLevel と同じ値。"""
+
+    ADVISORY = "ADVISORY"  # でんき注意報
+    WARNING = "WARNING"  # でんき警報
+    CUSTOM = "CUSTOM"  # 任意スケジュール（docs/07 §7.9）
+
+
+class RepeatType(enum.StrEnum):
+    ONCE = "ONCE"  # 1回のみ（target_date）
+    DAILY = "DAILY"  # 毎日
+    WEEKLY = "WEEKLY"  # 曜日指定（weekdays）
 
 
 class EnabledBy(enum.StrEnum):
@@ -55,7 +69,8 @@ class ControlSchedule(Base):
     start_at: Mapped[datetime] = mapped_column(UTCDateTime)
     end_at: Mapped[datetime] = mapped_column(UTCDateTime)
     target_state: Mapped[str] = mapped_column(String(8), default="OFF")
-    source_level: Mapped[ForecastLevel] = mapped_column(Enum(ForecastLevel, native_enum=False))
+    source_level: Mapped[ScheduleSource] = mapped_column(Enum(ScheduleSource, native_enum=False))
+    rule_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # 任意スケジュールの展開元
     enabled: Mapped[bool] = mapped_column(Boolean)
     enabled_by: Mapped[EnabledBy] = mapped_column(Enum(EnabledBy, native_enum=False))
     manually_modified: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -74,6 +89,47 @@ class ControlSchedule(Base):
     battery_end_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     measured_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)  # OFF 中の平均消費電力
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+
+class ScheduleRule(Base):
+    """任意スケジュールのルール（docs/10-database.md §10.9）。当日・翌日分を control_schedules に展開する。"""
+
+    __tablename__ = "schedule_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(50))
+    target_state: Mapped[str] = mapped_column(String(8))  # ON / OFF
+    repeat_type: Mapped[RepeatType] = mapped_column(Enum(RepeatType, native_enum=False))
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # ONCE のみ
+    weekdays: Mapped[str | None] = mapped_column(String(16), nullable=True)  # WEEKLY のみ。月=0〜日=6 のカンマ区切り
+    # 表示用のタイムゾーンの時刻（30分単位）。end_time の 00:00 は 24:00 とみなす
+    start_time: Mapped[time] = mapped_column(Time)
+    end_time: Mapped[time] = mapped_column(Time)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+    @property
+    def weekday_set(self) -> set[int]:
+        return {int(d) for d in (self.weekdays or "").split(",") if d}
+
+    @property
+    def start_minute(self) -> int:
+        return self.start_time.hour * 60 + self.start_time.minute
+
+    @property
+    def end_minute(self) -> int:
+        return self.end_time.hour * 60 + self.end_time.minute or 24 * 60
+
+    def applies_to(self, day: date) -> bool:
+        """day に適用されるか（無効なルールは適用しない）。"""
+        if not self.enabled:
+            return False
+        if self.repeat_type == RepeatType.ONCE:
+            return self.target_date == day
+        if self.repeat_type == RepeatType.WEEKLY:
+            return day.weekday() in self.weekday_set
+        return True
 
 
 class ControlLog(Base):

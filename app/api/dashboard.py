@@ -75,13 +75,13 @@ def _price_summary(session: Session, settings: Settings, now: datetime, view: Pr
 
 
 def _schedule_summary(session: Session, now: datetime) -> dict:
-    """次に実行する（有効な）OFF 予定と、まだ開始していない無効の注意報スケジュールの件数。"""
+    """次に実行する（有効な）OFF 予定と、まだ開始していない無効の注意報スケジュールの件数。任意 ON は OFF 予定に含めない。"""
     schedules = optimizer.schedules_for(session, now.date()) + optimizer.schedules_for(
         session, now.date() + timedelta(days=1)
     )
     upcoming = [s for s in schedules if s.end_at > now]
     return {
-        "next_off": next((s for s in upcoming if s.enabled), None),
+        "next_off": next((s for s in upcoming if s.enabled and s.target_state == "OFF"), None),
         "pending_advisories": sum(
             1 for s in upcoming if not s.enabled and s.start_at > now and s.source_level == ForecastLevel.ADVISORY
         ),

@@ -27,6 +27,15 @@
 {%- endif -%}
 {%- endmacro %}
 
+{# スケジュールの区分のバッジ（任意スケジュールは ON／OFF を併記する） #}
+{% macro schedule_badge(s) -%}
+{%- if s.source_level == "CUSTOM" -%}
+<span class="inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium {{ 'bg-sky-500/15 text-sky-300' if s.target_state == 'ON' else 'bg-violet-500/20 text-violet-300' }}">任意（{{ s.target_state }}）</span>
+{%- else -%}
+{{ level_badge(s.source_level) }}
+{%- endif -%}
+{%- endmacro %}
+
 {# ON/OFF、制御モード、操作元、操作結果のバッジ #}
 {% macro state_badge(value) -%}
 {%- set styles = {

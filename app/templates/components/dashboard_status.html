@@ -1,4 +1,4 @@
-{% from "components/ui.html" import card, stat, state_badge, level_badge, refresh_button with context %}
+{% from "components/ui.html" import card, stat, state_badge, level_badge, schedule_badge, refresh_button with context %}
 {%- set p = prices -%}
 {%- set c = control -%}
 <div class="grid gap-4 lg:grid-cols-3">
@@ -80,7 +80,7 @@
       <a href="{{ url_for('schedule') }}?day={{ 'today' if next_off.schedule_date == now.date() else 'tomorrow' }}" class="hover:underline">
         {{ "" if next_off.schedule_date == now.date() else "明日 " }}{{ next_off.start_at|local("%H:%M") }}〜{{ next_off.end_at|local("%H:%M") }}
       </a>
-      {{ level_badge(next_off.source_level) }}
+      {{ schedule_badge(next_off) }}
       {% else %}
       <span class="text-slate-500">有効な予定なし</span>
       {% endif %}

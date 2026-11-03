@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, level_badge, state_badge %}
+{% from "components/ui.html" import card, schedule_badge, state_badge %}
 
 {% block title %}運転スケジュール | Looop Smart Plug Controller{% endblock %}
 
@@ -13,6 +13,7 @@
                 {{ "無効にする" if s.enabled else "有効にする" }}
               </button>
             </form>
+            {% if s.source_level != "CUSTOM" %}
             <details class="group" {{ "open" if error_id == s.id }}>
               <summary class="cursor-pointer list-none whitespace-nowrap rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 [&::-webkit-details-marker]:hidden">時間変更</summary>
               <form method="post" action="{{ url_for('change_schedule_time', schedule_id=s.id) }}" class="mt-2 flex flex-wrap items-center gap-1 text-xs">
@@ -25,6 +26,7 @@
                 <button type="submit" class="rounded bg-sky-600 px-2 py-1 hover:bg-sky-500">変更</button>
               </form>
             </details>
+            {% endif %}
           </div>
           {% else %}
           <span class="text-xs text-slate-500">変更できません</span>
@@ -42,7 +44,9 @@
 {%- endmacro %}
 
 {% macro saving_text(s) -%}
+{% if s.target_state == "ON" %}<span class="text-slate-500">—</span>{% else %}
 <span class="tabular-nums">{{ "%.1f"|format(s.estimated_saving) }}円</span>
+{% endif %}
 {% if s.executed_saving is not none %}<span class="block text-xs text-slate-400 tabular-nums">実行分 {{ "%.1f"|format(s.executed_saving) }}円</span>{% endif %}
 {% if s.battery_start_percent is not none and s.battery_end_percent is not none %}
 <span class="block text-xs text-slate-400 tabular-nums">残量 {{ s.battery_start_percent }}→{{ s.battery_end_percent }}%（{{ "%+d"|format(s.battery_end_percent - s.battery_start_percent) }}%）</span>
@@ -52,6 +56,56 @@
 
 {% macro time_range(s) -%}
 {{ s.start_at|local("%H:%M") }}〜{{ s.end_at|local("%H:%M") if s.end_at|local("%H:%M") != "00:00" else "24:00" }}
+{%- endmacro %}
+
+{# 任意スケジュールのルールの入力欄。v はフォームの値（name / target_state / repeat_type / target_date / weekdays / start / end） #}
+{% macro rule_fields(v) -%}
+<div class="grid gap-3 text-sm sm:grid-cols-2">
+  <label class="block">
+    <span class="text-xs text-slate-400">名前</span>
+    <input type="text" name="name" required maxlength="50" value="{{ v.name }}" placeholder="例：夕方の在宅時間"
+           class="mt-1 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1.5">
+  </label>
+  <fieldset>
+    <legend class="text-xs text-slate-400">内容</legend>
+    <div class="mt-2 flex flex-wrap gap-4">
+      <label class="inline-flex items-center gap-1.5"><input type="radio" name="target_state" value="OFF" {{ "checked" if v.target_state == "OFF" }}> OFF（蓄電池から給電）</label>
+      <label class="inline-flex items-center gap-1.5"><input type="radio" name="target_state" value="ON" {{ "checked" if v.target_state == "ON" }}> ON（商用電源のまま）</label>
+    </div>
+  </fieldset>
+  <div>
+    <span class="text-xs text-slate-400">時間帯（30分単位。終了 00:00 は 24:00）</span>
+    <div class="mt-1 flex items-center gap-1">
+      <input type="time" name="start" step="1800" required value="{{ v.start }}" class="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 [color-scheme:dark]">
+      〜
+      <input type="time" name="end" step="1800" required value="{{ v.end }}" class="rounded border border-slate-700 bg-slate-950 px-2 py-1.5 [color-scheme:dark]">
+    </div>
+  </div>
+  <div>
+    <label class="block">
+      <span class="text-xs text-slate-400">繰り返し</span>
+      <select name="repeat_type" class="mt-1 rounded border border-slate-700 bg-slate-950 px-2 py-1.5">
+        {% for value, label in [("ONCE", "1回のみ"), ("DAILY", "毎日"), ("WEEKLY", "曜日指定")] %}
+        <option value="{{ value }}" {{ "selected" if v.repeat_type == value }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="mt-2 block">
+      <span class="text-xs text-slate-400">対象日（1回のみ）</span>
+      <input type="date" name="target_date" value="{{ v.target_date }}" class="mt-1 rounded border border-slate-700 bg-slate-950 px-2 py-1.5 [color-scheme:dark]">
+    </label>
+    <fieldset class="mt-2">
+      <legend class="text-xs text-slate-400">曜日（曜日指定）</legend>
+      <div class="mt-1 flex flex-wrap gap-2">
+        {% for label in weekday_labels %}
+        <label class="inline-flex items-center gap-1"><input type="checkbox" name="weekdays" value="{{ loop.index0 }}" {{ "checked" if loop.index0 in v.weekdays }}> {{ label }}</label>
+        {% endfor %}
+      </div>
+    </fieldset>
+  </div>
+</div>
+<input type="hidden" name="day" value="{{ day }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
 {%- endmacro %}
 
 {% block content %}
@@ -75,6 +129,11 @@
 {% if message %}
 <p class="mb-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status">{{ message }}</p>
 {% endif %}
+{% if warnings %}
+<ul class="mb-4 list-inside list-disc rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200" role="status">
+  {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
+</ul>
+{% endif %}
 {% if errors %}
 <ul class="mb-4 list-inside list-disc rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">
   {% for e in errors %}<li>{{ e }}</li>{% endfor %}
@@ -93,7 +152,7 @@
   <table class="w-full min-w-[56rem] text-left text-sm">
     <thead class="whitespace-nowrap border-b border-slate-800 text-xs text-slate-400">
       <tr>
-        <th class="px-4 py-2 font-medium">時刻（OFF）</th>
+        <th class="px-4 py-2 font-medium">時刻</th>
         <th class="px-4 py-2 font-medium">区分</th>
         <th class="px-4 py-2 font-medium">状態</th>
         <th class="px-4 py-2 font-medium">理由</th>
@@ -106,7 +165,7 @@
       {% set started = s.start_at <= now %}
       <tr class="align-top {{ 'text-slate-500' if started or not s.enabled }} {{ 'bg-rose-500/5' if error_id == s.id }}">
         <td class="whitespace-nowrap px-4 py-3 tabular-nums">{{ time_range(s) }}</td>
-        <td class="px-4 py-3">{{ level_badge(s.source_level) }}</td>
+        <td class="px-4 py-3">{{ schedule_badge(s) }}</td>
         <td class="whitespace-nowrap px-4 py-3">{{ state_text(s, started) }}</td>
         <td class="px-4 py-3">{{ s.reason }}</td>
         <td class="whitespace-nowrap px-4 py-3 text-right">{{ saving_text(s) }}</td>
@@ -122,7 +181,7 @@
   {% set started = s.start_at <= now %}
   <li class="rounded-lg border p-3 text-sm {{ 'border-rose-500/50' if error_id == s.id else 'border-slate-800' }} {{ 'text-slate-500' if started or not s.enabled }}">
     <div class="flex items-center justify-between gap-2">
-      <span class="text-base tabular-nums">{{ time_range(s) }}</span>{{ level_badge(s.source_level) }}
+      <span class="text-base tabular-nums">{{ time_range(s) }}</span>{{ schedule_badge(s) }}
     </div>
     <div class="mt-2 flex items-start justify-between gap-2">
       <div>{{ state_text(s, started) }}</div>
@@ -133,17 +192,73 @@
   </li>
   {% endfor %}
 </ul>
+{% if not has_forecast %}
+<p class="mt-3 text-xs text-slate-400">この日の料金予報が未取得のため、でんき予報のスケジュールはありません（任意スケジュールは実行します）。</p>
+{% endif %}
 {% elif has_forecast %}
 <p class="text-sm text-slate-400">この日はでんき注意報・警報がないため、OFF のスケジュールはありません。</p>
 {% else %}
-<p class="text-sm text-slate-400">この日の料金予報が未取得のため、スケジュールはありません（予報を取得できるまで新規の OFF は行いません）。</p>
+<p class="text-sm text-slate-400">この日の料金予報が未取得のため、スケジュールはありません（予報を取得できるまで、でんき予報による新規の OFF は行いません）。</p>
 {% endif %}
+{% endcall %}
+
+<h2 class="mb-3 mt-8 text-lg font-semibold">任意スケジュール</h2>
+{% call card(None, id="rules") %}
+{% if rules %}
+<ul class="divide-y divide-slate-800/70">
+  {% for r, repeat_label, values in rules %}
+  <li class="py-3 text-sm {{ 'text-slate-500' if not r.enabled }}">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-medium">{{ r.name }}</span>
+        {{ schedule_badge({"source_level": "CUSTOM", "target_state": r.target_state}) }}
+        <span class="tabular-nums">{{ values.start }}〜{{ "24:00" if values.end == "00:00" else values.end }}</span>
+        <span class="text-slate-400">{{ repeat_label }}</span>
+        {% if r.enabled %}<span class="font-medium text-emerald-300">有効</span>{% else %}<span class="text-slate-400">無効</span>{% endif %}
+      </div>
+      <div class="flex flex-wrap items-center gap-2">
+        <form method="post" action="{{ url_for('toggle_rule', rule_id=r.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <input type="hidden" name="day" value="{{ day }}">
+          <input type="hidden" name="enabled" value="{{ 'false' if r.enabled else 'true' }}">
+          <button type="submit" class="whitespace-nowrap rounded-md border px-2.5 py-1 text-xs {{ 'border-slate-600 text-slate-300 hover:bg-slate-800' if r.enabled else 'border-emerald-700 text-emerald-300 hover:bg-emerald-900/30' }}">
+            {{ "無効にする" if r.enabled else "有効にする" }}
+          </button>
+        </form>
+        <form method="post" action="{{ url_for('delete_rule', rule_id=r.id) }}" onsubmit="return confirm('任意スケジュール「{{ r.name }}」を削除しますか？（開始前の予定も削除します）')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+          <input type="hidden" name="day" value="{{ day }}">
+          <button type="submit" class="whitespace-nowrap rounded-md border border-rose-800 px-2.5 py-1 text-xs text-rose-300 hover:bg-rose-900/30">削除</button>
+        </form>
+      </div>
+    </div>
+    <details class="mt-2" {{ "open" if rule_error_id == r.id }}>
+      <summary class="cursor-pointer text-xs text-slate-400 hover:text-slate-200">編集</summary>
+      <form method="post" action="{{ url_for('update_rule', rule_id=r.id) }}" class="mt-3 space-y-3">
+        {{ rule_fields(rule_form if rule_error_id == r.id and rule_form else values) }}
+        <button type="submit" class="rounded bg-sky-600 px-3 py-1.5 text-sm hover:bg-sky-500">変更</button>
+      </form>
+    </details>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="text-sm text-slate-400">登録した任意スケジュールはありません。</p>
+{% endif %}
+<details class="mt-4 border-t border-slate-800 pt-4" {{ "open" if rule_form and rule_error_id is none }}>
+  <summary class="cursor-pointer text-sm text-sky-300 hover:text-sky-200">任意スケジュールを追加</summary>
+  <form method="post" action="{{ url_for('create_rule') }}" class="mt-3 space-y-3">
+    {{ rule_fields(new_rule) }}
+    <button type="submit" class="rounded bg-sky-600 px-3 py-1.5 text-sm hover:bg-sky-500">追加</button>
+  </form>
+</details>
 {% endcall %}
 
 <div class="mt-3 space-y-1 text-xs text-slate-500">
   <p>でんき警報のスケジュールは常に有効、でんき注意報は「自動適用（AUTO_ENABLE）」が{{ "有効" if control.auto_enable else "無効" }}のため{{ "自動で有効" if control.auto_enable else "個別に有効にしない限り実行しません" }}。設定は<a href="{{ url_for('settings') }}" class="underline">設定画面</a>で変更できます。</p>
   <p>時間は30分単位で変更でき、他のスケジュールと重ならず、間隔が0分（連続）か最低切り替え間隔（{{ control.min_switch_interval_minutes }}分）以上である必要があります。でんき注意報は運用時間（{{ control.operation_start.strftime("%H:%M") }}〜{{ control.operation_end.strftime("%H:%M") }}）・最大連続OFF（{{ control.max_continuous_off_minutes }}分）・1日の最大OFF（{{ control.max_daily_off_minutes }}分）の範囲内に限ります。</p>
   <p>手動で変更したスケジュールは、予報の再取得や再生成で上書きされません。</p>
+  <p>任意スケジュールは、でんき予報のスケジュールより優先します（でんき予報のスケジュールは任意スケジュールと重ならない範囲で作ります）。OFF の任意スケジュールにも、でんき注意報と同じ制限（運用時間・最大連続OFF・1日の最大OFF・最低切り替え間隔）を適用します。今日・明日の分は個別に有効・無効を切り替えられます（時間の変更はルールで行います）。</p>
   <p>有効なスケジュールは1分ごとの制御サイクルで実行します。実行時にも OFF 時間の制限を確認し、到達した場合は途中で ON に戻します（中断）。{% if is_dry_run(request) %}Dry Run 中のため、プラグは操作せず履歴に記録するだけです。{% endif %}</p>
 </div>
 {% endblock %}

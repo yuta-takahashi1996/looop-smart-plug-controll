@@ -18,7 +18,16 @@ from app.clients.switchbot import (
     build_auth_headers,
 )
 from app.config import get_settings
-from app.models.schedule import ControlLog, ControlResult, ControlSchedule, ControlSource, PlugState, ScheduleStatus
+from app.models.schedule import (
+    ControlLog,
+    ControlResult,
+    ControlSchedule,
+    ControlSource,
+    PlugState,
+    RepeatType,
+    ScheduleRule,
+    ScheduleStatus,
+)
 from app.models.settings import EventCategory, unresolved_events
 from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.repositories.database import SessionLocal
@@ -329,6 +338,56 @@ def test_adjacent_schedules_do_not_switch_between(session: Session, control: Con
 
     assert [log[2] for log in _logs(session)] == ["ON", "OFF", "ON"]
     assert [s.status for s in _schedules(session)] == [ScheduleStatus.DONE, ScheduleStatus.DONE]
+
+
+def _custom_rule(session: Session, state: str, start: int, end: int) -> None:
+    rule = ScheduleRule(
+        name=f"任意{state}", target_state=state, repeat_type=RepeatType.DAILY, start_time=time(start), end_time=time(end), enabled=True
+    )
+    optimizer.save_rule(session, get_settings(), rule, now=datetime.combine(DAY, time(), tzinfo=JST) - timedelta(hours=1))
+
+
+def test_custom_off_runs_without_forecast(session: Session, control: ControlService) -> None:
+    _custom_rule(session, "OFF", 12, 13)  # 予報は未取得
+
+    for t in [_at(11, 59), _at(12), _at(12, 30), _at(13)]:
+        control.run_cycle(t)
+
+    assert [log[2] for log in _logs(session)] == ["ON", "OFF", "ON"]
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.DONE and s.executed_start_at == _at(12)
+    assert s.executed_saving is None  # 予報がないため算出しない
+
+
+def test_custom_off_is_limited_like_advisory(session: Session, control: ControlService) -> None:
+    _custom_rule(session, "OFF", 12, 13)
+    s = _schedules(session)[0]
+    s.start_at, s.end_at = _at(17, 0, 0), _at(19, 0, 0)  # 運用時間外にずれた場合も実行時に止める
+    session.commit()
+
+    for t in [_at(17, 30), _at(18)]:
+        control.run_cycle(t)
+
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.ABORTED and "運用時間外" in s.status_reason
+    assert [log[2] for log in _logs(session)] == ["ON", "OFF", "ON"]
+
+
+def test_custom_on_keeps_plug_on(session: Session, control: ControlService) -> None:
+    _custom_rule(session, "OFF", 12, 13)
+    _custom_rule(session, "ON", 13, 14)
+
+    for t in [_at(12), _at(13), _at(13, 30), _at(14)]:
+        control.run_cycle(t)
+
+    logs = _logs(session)
+    assert [log[2] for log in logs] == ["ON", "OFF", "ON"]
+    session.expire_all()
+    on_log = session.scalars(select(ControlLog).order_by(ControlLog.id.desc())).first()
+    assert "任意スケジュール「任意ON」" in on_log.reason and on_log.source == ControlSource.AUTO
+    on_schedule = _schedules(session)[1]
+    assert on_schedule.status == ScheduleStatus.DONE
+    assert on_schedule.executed_start_at is None and on_schedule.executed_saving is None  # OFF 時間・節約額に含めない
 
 
 def test_schedule_missed_while_stopped_is_skipped(session: Session, control: ControlService) -> None:
