@@ -35,7 +35,8 @@ looop-power-controller/
 │   │   ├── optimizer.py
 │   │   ├── scheduler.py
 │   │   ├── controller.py
-│   │   └── safety.py
+│   │   ├── safety.py
+│   │   └── maintenance.py
 │   │
 │   ├── models/
 │   │   ├── forecast.py

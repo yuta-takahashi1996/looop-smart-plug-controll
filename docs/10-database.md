@@ -9,7 +9,7 @@
 | control_logs | 操作・実行履歴 |
 | system_settings | システム設定 |
 | system_events | エラー・イベント履歴 |
-| daily_summaries | 日次集計・推定節約額（Phase 7 で実装。それまでは control_schedules・control_logs から都度集計する） |
+| daily_summaries | 日次集計・推定節約額（前日分を毎日集計する。当日分は画面で都度集計する） |
 | price_adjustments | 請求単価への加算額 |
 
 日時はすべて UTC で保存し、表示時に `TZ` のタイムゾーンへ変換する。
@@ -49,6 +49,8 @@
 | executed_start_at / executed_end_at | 実際に OFF にした（Dry Run では OFF にするはずだった）時間帯 |
 | executed_saving | 実行した時間帯の推定節約額（推定節約額の検証用） |
 | status_reason | 中断・未実行の理由 |
+| battery_start_percent / battery_end_percent | 実行開始時・終了時のポータブル電源の残量（取得できた場合） |
+| measured_power_w | 実行中に取得した消費電力（出力W）の平均（取得できた場合） |
 | updated_at | 更新日時 |
 
 ## 10.3 control_logs
@@ -104,3 +106,30 @@
 | effective_to | 適用終了日（終了日を含む。NULL は期限なし） |
 | note | メモ |
 | updated_at | 更新日時 |
+
+## 10.7 daily_summaries
+
+| カラム | 説明 |
+|---|---|
+| summary_date | 対象日（主キー） |
+| off_minutes | 実行した OFF 時間の合計（分） |
+| switch_count | 状態が変わった操作の回数 |
+| schedules_done / schedules_aborted / schedules_skipped | 完了・中断・未実行のスケジュールの件数 |
+| estimated_saving | 実行分の推定節約額の合計（円） |
+| battery_used_percent | 実測できた OFF の残量減少の合計（%） |
+| measured_power_w | 実測できた OFF の平均消費電力（W、実行時間で加重平均） |
+| failed_operations | 失敗・未確認の操作の件数 |
+| dry_run | Dry Run の記録を含むか |
+| updated_at | 更新日時 |
+
+毎日 0:05 に前日分を集計する。起動時は直近7日の未集計の日も集計する（記録のない日は作らない）。前日分は毎回集計し直す。
+
+## 10.8 保持期間とバックアップ
+
+| データ | 保持期間 |
+|---|---|
+| control_logs・control_schedules・forecast_prices | `DATA_RETENTION_DAYS`（初期値 400日。前年との比較のため1年強） |
+| system_events（解決済み） | 90日（単価に関わるお知らせは重複検知に使うため削除しない） |
+| daily_summaries・system_settings・price_adjustments | 削除しない |
+
+毎日 3:30 に、SQLite のオンラインバックアップを `data/backups/app-YYYYMMDD.db` に作成し（`BACKUP_GENERATIONS` 世代、初期値14）、保持期間を過ぎたデータを削除して WAL の反映と `PRAGMA optimize` を行う（`app/services/maintenance.py`）。
