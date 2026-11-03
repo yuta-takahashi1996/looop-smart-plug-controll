@@ -15,7 +15,7 @@ from app.models.settings import EventCategory, EventLevel, SystemEvent, load_con
 from app.providers.base import ForecastLevel
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
-from app.services import mock_data
+from app.services import mock_data, optimizer
 from app.services.controller import PlugSnapshot
 from app.templating import templates
 
@@ -73,6 +73,20 @@ def _price_summary(session: Session, settings: Settings, now: datetime, view: Pr
     )
 
 
+def _schedule_summary(session: Session, now: datetime) -> dict:
+    """次に実行する（有効な）OFF 予定と、まだ開始していない無効の注意報スケジュールの件数。"""
+    schedules = optimizer.schedules_for(session, now.date()) + optimizer.schedules_for(
+        session, now.date() + timedelta(days=1)
+    )
+    upcoming = [s for s in schedules if s.end_at > now]
+    return {
+        "next_off": next((s for s in upcoming if s.enabled), None),
+        "pending_advisories": sum(
+            1 for s in upcoming if not s.enabled and s.start_at > now and s.source_level == ForecastLevel.ADVISORY
+        ),
+    }
+
+
 def _system_status(events: list[SystemEvent]) -> str:
     if any(e.level == EventLevel.ERROR for e in events):
         return "ERROR"
@@ -94,6 +108,7 @@ def _context(request: Request, session: Session) -> dict:
         "events": events,
         "system_status": _system_status(events),
         "control": mock_data.get_control_summary(settings),
+        **_schedule_summary(session, now),
     }
 
 

@@ -1,48 +1,136 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, state_badge %}
+{% from "components/ui.html" import card, level_badge %}
 
 {% block title %}運転スケジュール | Looop Smart Plug Controller{% endblock %}
 
+{% macro actions(s, started) -%}
+          {% if not started %}
+          <div class="flex flex-wrap items-center gap-2">
+            <form method="post" action="{{ url_for('toggle_schedule', schedule_id=s.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+              <input type="hidden" name="enabled" value="{{ 'false' if s.enabled else 'true' }}">
+              <button type="submit" class="whitespace-nowrap rounded-md border px-2.5 py-1 text-xs {{ 'border-slate-600 text-slate-300 hover:bg-slate-800' if s.enabled else 'border-emerald-700 text-emerald-300 hover:bg-emerald-900/30' }}">
+                {{ "無効にする" if s.enabled else "有効にする" }}
+              </button>
+            </form>
+            <details class="group" {{ "open" if error_id == s.id }}>
+              <summary class="cursor-pointer list-none whitespace-nowrap rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 [&::-webkit-details-marker]:hidden">時間変更</summary>
+              <form method="post" action="{{ url_for('change_schedule_time', schedule_id=s.id) }}" class="mt-2 flex flex-wrap items-center gap-1 text-xs">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+                <input type="time" name="start" step="1800" required value="{{ s.start_at|local('%H:%M') }}"
+                       class="rounded border border-slate-700 bg-slate-950 px-2 py-1 [color-scheme:dark]">
+                〜
+                <input type="time" name="end" step="1800" required value="{{ s.end_at|local('%H:%M') }}"
+                       class="rounded border border-slate-700 bg-slate-950 px-2 py-1 [color-scheme:dark]">
+                <button type="submit" class="rounded bg-sky-600 px-2 py-1 hover:bg-sky-500">変更</button>
+              </form>
+            </details>
+          </div>
+          {% else %}
+          <span class="text-xs text-slate-500">変更できません</span>
+          {% endif %}
+{%- endmacro %}
+
+{% macro state_text(s, started) -%}
+{% if s.enabled %}<span class="font-medium text-emerald-300">有効</span>{% else %}<span class="text-slate-400">無効</span>{% endif %}
+<span class="block text-xs text-slate-500">
+  {{ "手動" if s.enabled_by == "MANUAL" else "自動" }}{% if s.manually_modified %}・手動変更済み{% endif %}{% if started %}・開始済み{% endif %}
+</span>
+{%- endmacro %}
+
+{% macro time_range(s) -%}
+{{ s.start_at|local("%H:%M") }}〜{{ s.end_at|local("%H:%M") if s.end_at|local("%H:%M") != "00:00" else "24:00" }}
+{%- endmacro %}
+
 {% block content %}
-<div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
   <h1 class="text-2xl font-bold">運転スケジュール</h1>
-  <p class="text-sm text-slate-400">
-    {{ day.strftime("%Y/%m/%d") }}・運用時間 {{ operation_start.strftime("%H:%M") }}〜{{ operation_end.strftime("%H:%M") }}・推定節約額 合計
-    <span class="font-semibold text-slate-200">{{ "%.1f"|format(total_saving) }}円</span>
-  </p>
+  <div class="flex flex-wrap items-center gap-2">
+    <div class="inline-flex rounded-lg border border-slate-800 bg-slate-900 p-1 text-sm" role="tablist">
+      {% for value, label in [("today", "今日"), ("tomorrow", "明日")] %}
+      <a href="{{ url_for('schedule') }}?day={{ value }}" role="tab" aria-selected="{{ 'true' if day == value else 'false' }}"
+         class="rounded-md px-4 py-1.5 {{ 'bg-slate-700 text-white' if day == value else 'text-slate-400 hover:text-slate-200' }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+    <form method="post" action="{{ url_for('regenerate_schedule') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="next" value="/schedule?day={{ day }}">
+      <button type="submit" class="rounded-md border border-sky-700 px-3 py-1.5 text-sm text-sky-300 hover:bg-sky-900/40">再生成</button>
+    </form>
+  </div>
 </div>
 
+{% if message %}
+<p class="mb-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status">{{ message }}</p>
+{% endif %}
+{% if errors %}
+<ul class="mb-4 list-inside list-disc rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">
+  {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+<p class="mb-3 text-sm text-slate-400">
+  {{ target.strftime("%Y/%m/%d") }}・有効なスケジュールの OFF 合計
+  <span class="font-semibold text-slate-200">{{ enabled_minutes }}分</span>（1日の上限 {{ control.max_daily_off_minutes }}分）・推定節約額
+  <span class="font-semibold text-slate-200">{{ "%.1f"|format(total_saving) }}円</span>
+</p>
+
 {% call card(None) %}
-{% if entries %}
-<div class="-mx-4 overflow-x-auto">
-  <table class="w-full min-w-[40rem] text-left text-sm">
+{% if schedules %}
+<div class="-mx-4 hidden overflow-x-auto md:block">
+  <table class="w-full min-w-[56rem] text-left text-sm">
     <thead class="whitespace-nowrap border-b border-slate-800 text-xs text-slate-400">
       <tr>
-        <th class="px-4 py-2 font-medium">時刻</th>
-        <th class="px-4 py-2 text-right font-medium">予報単価</th>
-        <th class="px-4 py-2 font-medium">制御予定</th>
+        <th class="px-4 py-2 font-medium">時刻（OFF）</th>
+        <th class="px-4 py-2 font-medium">区分</th>
+        <th class="px-4 py-2 font-medium">状態</th>
         <th class="px-4 py-2 font-medium">理由</th>
         <th class="px-4 py-2 text-right font-medium">推定節約額</th>
-        <th class="px-4 py-2 font-medium">状態</th>
+        <th class="px-4 py-2 font-medium">操作</th>
       </tr>
     </thead>
     <tbody class="divide-y divide-slate-800/70">
-      {% for e in entries %}
-      <tr class="{{ 'text-slate-500' if e.status == 'DONE' else '' }}">
-        <td class="whitespace-nowrap px-4 py-2 tabular-nums">{{ e.start.strftime("%H:%M") }}〜{{ e.end.strftime("%H:%M") }}</td>
-        <td class="whitespace-nowrap px-4 py-2 text-right tabular-nums">{{ "%.1f"|format(e.price) }}円</td>
-        <td class="px-4 py-2">{{ state_badge(e.target_state) }}</td>
-        <td class="px-4 py-2">{{ e.reason }}</td>
-        <td class="whitespace-nowrap px-4 py-2 text-right tabular-nums">{{ "%.1f"|format(e.estimated_saving) }}円</td>
-        <td class="px-4 py-2">{{ state_badge(e.status) }}</td>
+      {% for s in schedules %}
+      {% set started = s.start_at <= now %}
+      <tr class="align-top {{ 'text-slate-500' if started or not s.enabled }} {{ 'bg-rose-500/5' if error_id == s.id }}">
+        <td class="whitespace-nowrap px-4 py-3 tabular-nums">{{ time_range(s) }}</td>
+        <td class="px-4 py-3">{{ level_badge(s.source_level) }}</td>
+        <td class="whitespace-nowrap px-4 py-3">{{ state_text(s, started) }}</td>
+        <td class="px-4 py-3">{{ s.reason }}</td>
+        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ "%.1f"|format(s.estimated_saving) }}円</td>
+        <td class="px-4 py-3">{{ actions(s, started) }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
 </div>
+{# スマートフォン：カード表示 #}
+<ul class="space-y-3 md:hidden">
+  {% for s in schedules %}
+  {% set started = s.start_at <= now %}
+  <li class="rounded-lg border p-3 text-sm {{ 'border-rose-500/50' if error_id == s.id else 'border-slate-800' }} {{ 'text-slate-500' if started or not s.enabled }}">
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-base tabular-nums">{{ time_range(s) }}</span>{{ level_badge(s.source_level) }}
+    </div>
+    <div class="mt-2 flex items-start justify-between gap-2">
+      <div>{{ state_text(s, started) }}</div>
+      <span class="tabular-nums">推定 {{ "%.1f"|format(s.estimated_saving) }}円</span>
+    </div>
+    <p class="mt-2 text-xs text-slate-400">{{ s.reason }}</p>
+    <div class="mt-3">{{ actions(s, started) }}</div>
+  </li>
+  {% endfor %}
+</ul>
+{% elif has_forecast %}
+<p class="text-sm text-slate-400">この日はでんき注意報・警報がないため、OFF のスケジュールはありません。</p>
 {% else %}
-<p class="text-sm text-slate-400">本日の制御予定はありません。</p>
+<p class="text-sm text-slate-400">この日の料金予報が未取得のため、スケジュールはありません（予報を取得できるまで新規の OFF は行いません）。</p>
 {% endif %}
 {% endcall %}
-<p class="mt-2 text-xs text-slate-500">モックデータを表示しています（最適化エンジンは Phase 4 で実装予定）。</p>
+
+<div class="mt-3 space-y-1 text-xs text-slate-500">
+  <p>でんき警報のスケジュールは常に有効、でんき注意報は「自動適用（AUTO_ENABLE）」が{{ "有効" if control.auto_enable else "無効" }}のため{{ "自動で有効" if control.auto_enable else "個別に有効にしない限り実行しません" }}。設定は<a href="{{ url_for('settings') }}" class="underline">設定画面</a>で変更できます。</p>
+  <p>時間は30分単位で変更でき、他のスケジュールと重ならず、間隔が0分（連続）か最低切り替え間隔（{{ control.min_switch_interval_minutes }}分）以上である必要があります。でんき注意報は運用時間（{{ control.operation_start.strftime("%H:%M") }}〜{{ control.operation_end.strftime("%H:%M") }}）・最大連続OFF（{{ control.max_continuous_off_minutes }}分）・1日の最大OFF（{{ control.max_daily_off_minutes }}分）の範囲内に限ります。</p>
+  <p>手動で変更したスケジュールは、予報の再取得や再生成で上書きされません。スケジュールの実行（プラグの操作）は Phase 5 以降で実装します。</p>
+</div>
 {% endblock %}
