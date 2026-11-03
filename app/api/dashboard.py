@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -11,11 +11,12 @@ from sqlalchemy.orm import Session
 from app.api.auth import verify_csrf
 from app.api.forecast import PriceView, get_price_view, price_of
 from app.config import Settings, get_settings
+from app.models.schedule import ControlLog, ControlSchedule, ScheduleStatus
 from app.models.settings import EventCategory, EventLevel, SystemEvent, load_control_settings, unresolved_events
 from app.providers.base import ForecastLevel
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
-from app.services import mock_data, optimizer
+from app.services import optimizer, safety
 from app.services.controller import PlugSnapshot
 from app.templating import templates
 
@@ -87,6 +88,55 @@ def _schedule_summary(session: Session, now: datetime) -> dict:
     }
 
 
+@dataclass(frozen=True)
+class ControlSummary:
+    dry_run: bool
+    mode: str  # SAFE / GRID / BATTERY（Dry Run では想定の状態）
+    last_log: ControlLog | None
+    today_saving: float  # 実行した（Dry Run では実行するはずだった）OFF の推定節約額
+    month_saving: float
+    today_switch_count: int
+    today_off_minutes: int
+
+
+def _executed_saving(session: Session, settings: Settings, schedule: ControlSchedule, now: datetime) -> float:
+    if schedule.executed_saving is not None:
+        return schedule.executed_saving
+    if schedule.status != ScheduleStatus.RUNNING or schedule.executed_start_at is None:
+        return 0.0
+    # 実行中は現在までの分
+    forecast = forecast_service.get_day_forecast(session, settings.looop_area, schedule.schedule_date, ZoneInfo(settings.tz))
+    if not forecast.slots:
+        return 0.0
+    params = optimizer.PlanParams.from_settings(load_control_settings(session, settings))
+    return optimizer.saving_between(forecast.slots, schedule.executed_start_at, now, params)
+
+
+def _control_summary(request: Request, session: Session, settings: Settings, now: datetime) -> ControlSummary:
+    control = request.app.state.control
+    today = optimizer.schedules_for(session, now.date())
+    month = list(
+        session.scalars(
+            select(ControlSchedule).where(
+                ControlSchedule.schedule_date >= now.date().replace(day=1), ControlSchedule.schedule_date <= now.date()
+            )
+        )
+    )
+    day_start = datetime.combine(now.date(), time(), tzinfo=now.tzinfo)
+    today_logs = list(session.scalars(select(ControlLog).where(ControlLog.executed_at >= day_start)))
+    return ControlSummary(
+        dry_run=control.dry_run,
+        mode=control.mode,
+        last_log=session.scalars(select(ControlLog).order_by(ControlLog.executed_at.desc(), ControlLog.id.desc())).first(),
+        today_saving=round(sum(_executed_saving(session, settings, s, now) for s in today), 1),
+        month_saving=round(sum(_executed_saving(session, settings, s, now) for s in month), 1),
+        today_switch_count=sum(
+            1 for log in today_logs if log.previous_state is not None and log.previous_state != log.requested_state
+        ),
+        today_off_minutes=safety.off_minutes(today, now),
+    )
+
+
 def _system_status(events: list[SystemEvent]) -> str:
     if any(e.level == EventLevel.ERROR for e in events):
         return "ERROR"
@@ -107,7 +157,7 @@ def _context(request: Request, session: Session) -> dict:
         "plug": plug,
         "events": events,
         "system_status": _system_status(events),
-        "control": mock_data.get_control_summary(settings),
+        "control": _control_summary(request, session, settings, now),
         **_schedule_summary(session, now),
     }
 

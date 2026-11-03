@@ -6,7 +6,7 @@
 {% block content %}
 <div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
   <h1 class="text-2xl font-bold">ダッシュボード</h1>
-  <p class="text-xs text-slate-500">「モック」表示の項目は、制御機能の実装（Phase 4〜6）まで仮の値です</p>
+  {% if dry_run %}<p class="text-xs text-amber-300">Dry Run 中：スケジュールは実行していますが、プラグは操作していません</p>{% endif %}
 </div>
 
 <div id="dashboard-status"

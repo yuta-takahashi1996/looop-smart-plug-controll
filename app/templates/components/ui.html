@@ -15,11 +15,6 @@
 </div>
 {%- endmacro %}
 
-{# まだ実データではない項目に付けるバッジ #}
-{% macro mock_badge(label="モック") -%}
-<span class="ml-1 inline-block whitespace-nowrap rounded border border-dashed border-slate-600 px-1.5 text-[10px] font-normal text-slate-400">{{ label }}</span>
-{%- endmacro %}
-
 {# でんき予報の区分のバッジ（NORMAL は表示しない） #}
 {% macro level_badge(level) -%}
 {%- set styles = {
@@ -50,8 +45,12 @@
   "WARNING": "bg-amber-500/15 text-amber-300",
   "ERROR": "bg-rose-500/15 text-rose-300",
   "INFO": "bg-slate-500/20 text-slate-300",
-  "DONE": "bg-slate-500/20 text-slate-400",
+  "DONE": "bg-slate-500/20 text-slate-300",
   "PENDING": "bg-sky-500/15 text-sky-300",
+  "RUNNING": "bg-emerald-500/20 text-emerald-300",
+  "ABORTED": "bg-amber-500/15 text-amber-300",
+  "SKIPPED": "bg-slate-500/20 text-slate-400",
+  "DRY_RUN": "bg-amber-500/15 text-amber-300",
 } -%}
 {%- set labels = {
   "ON": "ON（商用電源）",
@@ -65,8 +64,12 @@
   "OK": "正常",
   "WARNING": "警告",
   "ERROR": "異常",
-  "DONE": "実行済",
+  "DONE": "完了",
   "PENDING": "予定",
+  "RUNNING": "実行中",
+  "ABORTED": "中断",
+  "SKIPPED": "未実行",
+  "DRY_RUN": "Dry Run",
 } -%}
 <span class="inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium {{ styles.get(value, 'bg-slate-500/20 text-slate-300') }}">{{ labels.get(value, value) }}</span>
 {%- endmacro %}

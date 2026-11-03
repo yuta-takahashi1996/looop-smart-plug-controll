@@ -92,6 +92,21 @@ def estimated_saving(slots: list[PriceSlot], start: int, end: int, params: PlanP
     return round(avoided - charge, 1)
 
 
+def saving_between(slots: list[PriceSlot], start_at: datetime, end_at: datetime, params: PlanParams) -> float:
+    """実行した時間帯（コマの途中から・途中までを含む）の推定節約額。計算方法は estimated_saving と同じ。"""
+    weights = []
+    for slot in slots:
+        overlap = (min(slot.end, end_at) - max(slot.start, start_at)).total_seconds()
+        weights.append(max(0.0, overlap) / SLOT.total_seconds())
+    if sum(weights) == 0:
+        return 0.0
+    operation_prices = [s.energy_price for s in slots if in_operation(s, params)] or [s.energy_price for s in slots]
+    kwh_per_slot = params.average_power_w / 1000 * SLOT_MINUTES / 60
+    avoided = sum(s.energy_price * w for s, w in zip(slots, weights, strict=True)) * kwh_per_slot
+    charge = min(operation_prices) * kwh_per_slot * sum(weights) / params.round_trip_efficiency
+    return round(avoided - charge, 1)
+
+
 def average_price(slots: list[PriceSlot], start: int, end: int) -> float:
     return sum(s.energy_price for s in slots[start:end]) / (end - start)
 
