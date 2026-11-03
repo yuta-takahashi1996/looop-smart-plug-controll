@@ -605,3 +605,20 @@ def test_warning_runs_outside_operation_hours_when_battery_known(session: Sessio
 
     assert plug.commands == ["OFF"]
     assert _schedules(session)[0].status == ScheduleStatus.RUNNING
+
+
+def test_measured_values_are_recorded_per_schedule(session: Session) -> None:
+    plug = FakePlug("ON")
+    battery = FakeBattery([(90, 150.0), (88, 170.0), (86, 160.0), (85, 150.0)])
+    control = _real_control(plug, battery)
+    _prepare(session, {range(20, 22): A})  # 10:00〜11:00
+
+    control.run_cycle(_at(10))  # 開始時に取得（90%・150W）
+    control.run_cycle(_at(10, 5))  # 88%・170W
+    control.run_cycle(_at(10, 10))  # 86%・160W
+    control.run_cycle(_at(11))  # 終了時に取得（85%）
+
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.DONE
+    assert (s.battery_start_percent, s.battery_end_percent) == (90, 85)
+    assert s.measured_power_w == pytest.approx((150 + 170 + 160 + 150) / 4, abs=0.1)

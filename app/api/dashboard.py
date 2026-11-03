@@ -176,7 +176,8 @@ def _system_status(events: list[SystemEvent]) -> str:
     return "OK"
 
 
-def _context(request: Request, session: Session) -> dict:
+def status_context(request: Request, session: Session) -> dict:
+    """ダッシュボードの電力情報・制御情報・集計情報（60秒ごとの部分更新の範囲）に渡す値。"""
     settings = get_settings()
     now = datetime.now(ZoneInfo(settings.tz))
     events = unresolved_events(session)
@@ -208,7 +209,7 @@ def dashboard(
         request,
         "dashboard.html",
         {
-            **_context(request, session),
+            **status_context(request, session),
             **chart_context(request, session, day),
             "refresh_result": refresh,
             "flash_message": message,
@@ -220,7 +221,7 @@ def dashboard(
 @router.get("/partials/dashboard/status", response_class=HTMLResponse, name="dashboard_status")
 def dashboard_status(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
     """HTMX による定期的な部分更新（docs/05-web-ui.md §5.9）。保存済みデータのみ参照する。"""
-    return templates.TemplateResponse(request, "components/dashboard_status.html", _context(request, session))
+    return templates.TemplateResponse(request, "components/dashboard_status.html", status_context(request, session))
 
 
 @router.post("/events/{event_id}/resolve", name="resolve_event", dependencies=[Depends(verify_csrf)])

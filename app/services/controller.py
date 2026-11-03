@@ -117,8 +117,9 @@ class BatteryMonitor:
         return self._client is not None and self._client.configured
 
     def reset_samples(self) -> None:
+        """OFF を始めたときに呼ぶ。直近の取得値（OFF 開始時に取得したもの）は残す。"""
         with self._lock:
-            self.samples = []
+            self.samples = [self.last.output_w] if self.last is not None else []
 
     def average_output_w(self) -> float | None:
         with self._lock:
@@ -199,6 +200,7 @@ class ControlService:
         self._real_control_enabled = False
         self._manual_off_since: datetime | None = None
         self._failed: tuple[PlugState, datetime] | None = None  # 最後に失敗した要求と時刻
+        self._sample_start: dict[int, int] = {}  # スケジュールごとの消費電力サンプルの開始位置（実測値の記録用）
         self._load_persisted()
 
     # --- 状態 ---
@@ -454,9 +456,12 @@ class ControlService:
                 if active.status == ScheduleStatus.PENDING:
                     active.status = ScheduleStatus.RUNNING
                     active.executed_start_at = now
+                    reading = self.battery.last
+                    active.battery_start_percent = reading.percent if safety.battery_known(reading, now) else None  # type: ignore[union-attr]
                     session.commit()
                 if self._state != PlugState.OFF and self._should_retry(PlugState.OFF, now):
                     self.request(session, PlugState.OFF, ControlSource.AUTO, active.reason, schedule_id=active.id, now=now)
+                self._sample_start.setdefault(active.id, max(0, len(self.battery.samples) - 1))
                 return
             # 安全制御で開始・継続できない
             if self._state != PlugState.ON and self._should_retry(PlugState.ON, now):
@@ -518,12 +523,27 @@ class ControlService:
     def _finish(
         self, session: Session, schedule: ControlSchedule, end: datetime, status: ScheduleStatus, reason: str | None
     ) -> None:
-        """実行中のスケジュールを終了し、実行した時間帯の推定節約額を記録する。"""
+        """実行中のスケジュールを終了し、実行した時間帯の推定節約額と実測値を記録する。"""
         schedule.executed_end_at = end
         schedule.status = status
         schedule.status_reason = reason
+        self._record_measurements(schedule)
         forecast = forecast_service.get_day_forecast(session, self._settings.looop_area, schedule.schedule_date, self._tz)
         if forecast.slots and schedule.executed_start_at is not None:
             params = optimizer.PlanParams.from_settings(load_control_settings(session, self._settings))
             schedule.executed_saving = optimizer.saving_between(forecast.slots, schedule.executed_start_at, end, params)
         session.commit()
+
+
+    def _record_measurements(self, schedule: ControlSchedule) -> None:
+        """終了時の残量と、そのスケジュールの間の平均消費電力を記録する（取得できた場合のみ）。"""
+        start = self._sample_start.pop(schedule.id, None)
+        if not self.battery.configured or schedule.executed_start_at is None:
+            return
+        reading = self.battery.read(datetime.now(UTC))
+        if reading is not None:
+            schedule.battery_end_percent = reading.percent
+        if start is not None:
+            samples = self.battery.samples[start:]
+            if samples:
+                schedule.measured_power_w = round(sum(samples) / len(samples), 1)

@@ -13,28 +13,44 @@
   </ul>
   {% endif %}
 
-  <label class="flex items-start gap-3 rounded-lg border border-slate-800 p-3 text-sm">
-    <input type="checkbox" name="auto_enable" {{ "checked" if values.get("auto_enable") == "on" }}
-           class="mt-0.5 h-4 w-4 accent-sky-500">
-    <span>
-      <span class="font-medium">でんき注意報のスケジュールを自動で有効にする（AUTO_ENABLE）</span>
-      <span class="mt-1 block text-xs text-slate-400">無効の場合、注意報のスケジュールは運転スケジュール画面で個別に有効にしない限り実行しません。でんき警報のスケジュールはこの設定によらず有効になります。</span>
-    </span>
-  </label>
-
-  <div class="grid gap-4 sm:grid-cols-2">
-    {% for key, label, unit, attrs in fields %}
-    <label class="block text-sm">
-      <span class="text-slate-400">{{ label }}</span>
-      <span class="mt-1 flex items-center gap-2">
-        <input name="{{ key }}" value="{{ values[key] }}" required
-               {% for attr, value in attrs.items() %}{{ attr }}="{{ value }}" {% endfor %}
-               class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 tabular-nums [color-scheme:dark] focus:border-sky-500 focus:outline-none">
-        {% if unit %}<span class="w-14 shrink-0 text-xs text-slate-400">{{ unit }}</span>{% endif %}
+  <fieldset class="rounded-lg border border-slate-800 p-3">
+    <legend class="px-1 text-sm font-semibold text-slate-300">スケジュール</legend>
+    <label class="flex items-start gap-3 text-sm">
+      <input type="checkbox" name="auto_enable" {{ "checked" if values.get("auto_enable") == "on" }}
+             class="mt-0.5 h-4 w-4 accent-sky-500">
+      <span>
+        <span class="font-medium">でんき注意報のスケジュールを自動で有効にする（AUTO_ENABLE）</span>
+        <span class="mt-1 block text-xs text-slate-400">無効の場合、注意報のスケジュールは運転スケジュール画面で個別に有効にしない限り実行しません。でんき警報のスケジュールはこの設定によらず有効になります。</span>
       </span>
     </label>
-    {% endfor %}
-  </div>
+  </fieldset>
+
+  {% for title, description, fields in groups %}
+  <fieldset class="rounded-lg border border-slate-800 p-3">
+    <legend class="px-1 text-sm font-semibold text-slate-300">{{ title }}</legend>
+    <p class="mb-3 text-xs text-slate-500">{{ description }}</p>
+    <div class="grid gap-4 sm:grid-cols-2">
+      {% for key, label, unit, attrs, help in fields %}
+      <label class="block text-sm">
+        <span class="text-slate-400">{{ label }}</span>
+        <span class="mt-1 flex items-center gap-2">
+          <input name="{{ key }}" value="{{ values[key] }}" required
+                 {% for attr, value in attrs.items() %}{{ attr }}="{{ value }}" {% endfor %}
+                 class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 tabular-nums [color-scheme:dark] focus:border-sky-500 focus:outline-none">
+          {% if unit %}<span class="w-10 shrink-0 text-xs text-slate-400">{{ unit }}</span>{% endif %}
+        </span>
+        {% if help %}<span class="mt-1 block text-xs text-slate-500">{{ help }}</span>{% endif %}
+        {% if key == "estimated_average_power_w" and hints.average_power_w is not none %}
+        <span class="mt-1 block text-xs text-sky-300">実測の目安：平均 {{ "%.0f"|format(hints.average_power_w) }}W（直近{{ hints.days }}日・{{ hints.count }}回の OFF）</span>
+        {% endif %}
+        {% if key == "round_trip_efficiency" and hints.efficiency_percent is not none %}
+        <span class="mt-1 block text-xs text-sky-300">実測の目安：{{ hints.efficiency_percent }}%（直近{{ hints.days }}日・{{ hints.efficiency_count }}回の OFF の残量減少と消費電力から推定。放電のみの効率のため、充電の損失を含めるとこれより低くなります）</span>
+        {% endif %}
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+  {% endfor %}
 
   <div class="flex items-center justify-end gap-3">
     <span class="htmx-indicator text-xs text-slate-400">保存中…</span>

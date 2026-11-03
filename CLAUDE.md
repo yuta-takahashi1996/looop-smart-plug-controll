@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクトの現状
 
-Phase 6（実制御、[docs/15-roadmap.md](docs/15-roadmap.md)）まで実装済み。
+Phase 7（運用改善、[docs/15-roadmap.md](docs/15-roadmap.md)）を実装中。
 - 料金予報：`app/providers/looop.py` がでんき予報の `/api/prices` から電源料金単価を取得し、`app/services/forecast.py` が検証・保存する。でんき予報の区分（日和・注意報・警報）も `level` として保存する。請求単価は「電源料金単価＋`price_adjustments` の加算額」で都度算出し、表示にのみ使う（[docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.5）。
 - SwitchBot：`app/clients/switchbot.py`（状態取得・turnOn/turnOff）。`app/services/controller.py` の `PlugMonitor` はプラグ状態の読み取りのみで、コマンドはまだ送信しない（Control Service 本体は Phase 6）。実機の確認は `scripts/switchbot_check.py`。
 - 定期ジョブ：`app/services/scheduler.py`（APScheduler）。`APP_ENV=test` では起動しない。
@@ -12,6 +12,7 @@ Phase 6（実制御、[docs/15-roadmap.md](docs/15-roadmap.md)）まで実装済
 - 実行：`app/services/controller.py` の `ControlService` が毎分の制御サイクル（`run_cycle`）で有効なスケジュールを実行し、`control_logs` に記録する。手動操作（`manual_power`）・自動制御の停止／再開も同じ経路。実行時の安全判定（OFF 時間の制限・残量の予測）は `app/services/safety.py`、残量の取得は `BatteryMonitor`。
 - 実制御：`DRY_RUN=false` かつ設定画面で「実制御を開始」と入力した場合のみ SwitchBot へ送信する（`set_real_control`、`app/api/control.py`）。送信後は状態を再取得して照合し、照合できなければ成功扱いにしない。テストでは SwitchBot・Jackery を模擬し、実機には送信しない。
 - 画面：すべて実データ。ヘッダーに Dry Run／実制御中を表示する。
+- 運用：`app/services/maintenance.py` が日次集計（`daily_summaries`）・バックアップ（`data/backups/`）・古いデータの削除を行う。本番は Docker（`docker compose up -d --build`）で動かす。`.env` の `$` を含む値はシングルクォートで囲む。
 
 `docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。
 
@@ -136,7 +137,7 @@ app/
 ├── api/            # dashboard.py, forecast.py, control.py, history.py, settings.py
 ├── providers/       # base.py, looop.py
 ├── clients/          # switchbot.py, jackery.py
-├── services/         # forecast.py, optimizer.py, scheduler.py, controller.py, safety.py
+├── services/         # forecast.py, optimizer.py, scheduler.py, controller.py, safety.py, maintenance.py
 ├── models/            # forecast.py, schedule.py, settings.py
 ├── repositories/      # database.py
 ├── templates/          # Jinja2 + HTMXの部分テンプレート、components/

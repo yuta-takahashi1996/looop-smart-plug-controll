@@ -4,14 +4,22 @@
 MANUAL モードへ移行し、自動制御で上書きしない。安全制御は MANUAL 中も継続する。
 """
 
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from urllib.parse import quote
 
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, Form, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
+from sqlalchemy.orm import Session
 
 from app.api.auth import verify_csrf
+from app.api.dashboard import status_context
+from app.config import get_settings
 from app.models.schedule import PlugState
+from app.repositories.database import get_session
+from app.templating import templates
 
 router = APIRouter()
 
@@ -66,3 +74,37 @@ def real_mode(
     except ValueError as exc:
         return _back("/settings", str(exc), error=True)
     return _back("/settings", "実制御を開始しました。次の制御サイクルから SwitchBot へコマンドを送信します")
+
+
+@router.post("/control/refresh/{target}", name="refresh_status", dependencies=[Depends(verify_csrf)])
+def refresh_status(
+    request: Request, target: Literal["plug", "battery"], session: Session = Depends(get_session)
+) -> Response:
+    """プラグ・ポータブル電源の状態を今すぐ取得する（読み取りのみ。制御はしない）。
+
+    HTMX からの要求では、ダッシュボードの状態表示（部分テンプレート）だけを返して差し替える。
+    """
+    if target == "plug":
+        snapshot = request.app.state.plug_monitor.refresh()
+        ok = snapshot.status is not None
+        message = (
+            f"{snapshot.checked_at.astimezone(_tz()):%H:%M:%S} に取得しました" if ok else f"取得できませんでした：{snapshot.error}"
+        )
+    else:
+        battery = request.app.state.control.battery
+        reading = battery.read(datetime.now(UTC))
+        ok = reading is not None
+        message = f"{reading.at.astimezone(_tz()):%H:%M:%S} に取得しました" if ok else f"取得できませんでした：{battery.last_error}"
+
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(
+            request,
+            "components/dashboard_status.html",
+            {**status_context(request, session), "refresh_target": target, "refresh_ok": ok, "refresh_message": message},
+        )
+    label = "プラグの状態" if target == "plug" else "ポータブル電源の状態"
+    return _back("/", f"{label}を{message}", error=not ok)
+
+
+def _tz() -> ZoneInfo:
+    return ZoneInfo(get_settings().tz)
