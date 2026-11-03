@@ -57,12 +57,18 @@
     <dd>{{ state_badge(system_status) }}</dd>
     <dt class="text-slate-400">自動制御 {{ mock_badge() }}</dt>
     <dd>{{ "有効" if c.auto_control_enabled else "停止中" }} {{ state_badge(c.mode) }}</dd>
-    <dt class="text-slate-400">次回切り替え {{ mock_badge() }}</dt>
+    <dt class="text-slate-400">次の OFF 予定</dt>
     <dd>
-      {% if c.next_switch %}
-      {{ c.next_switch.start.strftime("%H:%M") }} → {{ state_badge(c.next_switch.target_state) }}
+      {% if next_off %}
+      <a href="{{ url_for('schedule') }}?day={{ 'today' if next_off.schedule_date == now.date() else 'tomorrow' }}" class="hover:underline">
+        {{ "" if next_off.schedule_date == now.date() else "明日 " }}{{ next_off.start_at|local("%H:%M") }}〜{{ next_off.end_at|local("%H:%M") }}
+      </a>
+      {{ level_badge(next_off.source_level) }}
       {% else %}
-      <span class="text-slate-500">本日の予定なし</span>
+      <span class="text-slate-500">有効な予定なし</span>
+      {% endif %}
+      {% if pending_advisories %}
+      <a href="{{ url_for('schedule') }}" class="mt-1 block text-xs text-amber-300 hover:underline">無効の注意報スケジュール {{ pending_advisories }}件</a>
       {% endif %}
     </dd>
     <dt class="text-slate-400">最終操作 {{ mock_badge() }}</dt>

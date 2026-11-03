@@ -1,7 +1,7 @@
-"""制御予定・制御履歴・集計のモックデータ。
+"""制御履歴・集計・自動制御の状態のモックデータ。
 
-料金予報とプラグ状態は Phase 3 で実データへ切り替え済み。制御予定（Phase 4）、
-制御履歴・推定節約額（Phase 5 以降）が実装されるまでの間、画面表示の確認用に使う。
+料金予報とプラグ状態は Phase 3、制御スケジュールは Phase 4 で実データへ切り替え済み。
+制御履歴・推定節約額の実績・自動制御の状態（Phase 5 以降）が実装されるまでの間、画面表示の確認用に使う。
 モックの料金は実際の予報とは無関係で、日付から決定的に生成する。
 実データへ切り替えたら、このモジュールは削除する。
 """
@@ -75,7 +75,6 @@ class ControlSummary:
 
     auto_control_enabled: bool
     mode: ControlMode
-    next_switch: ScheduleEntry | None
     last_log: ControlLogEntry | None
     today_saving: float
     month_saving: float
@@ -219,7 +218,6 @@ def get_control_summary(settings: Settings) -> ControlSummary:
     return ControlSummary(
         auto_control_enabled=True,
         mode="BATTERY" if forecast.slots[index].planned_state == "OFF" else "GRID",
-        next_switch=next((e for e in schedule if e.start > current), None),
         last_log=history[0] if history else None,
         today_saving=today_saving,
         month_saving=round(today_saving + 18.4 * (current.day - 1), 1),

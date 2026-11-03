@@ -19,10 +19,15 @@
 <div class="mt-4">
   {% call card("手動操作") %}
   <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-    {% for label in ["自動制御開始", "自動制御停止", "プラグON", "プラグOFF", "スケジュール再生成"] %}
+    {% for label in ["自動制御開始", "自動制御停止", "プラグON", "プラグOFF"] %}
     <button type="button" disabled
             class="cursor-not-allowed rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-500">{{ label }}</button>
     {% endfor %}
+    <form method="post" action="{{ url_for('regenerate_schedule') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <input type="hidden" name="next" value="/schedule">
+      <button type="submit" class="w-full rounded-md border border-sky-700 px-3 py-2 text-sm text-sky-300 hover:bg-sky-900/40">スケジュール再生成</button>
+    </form>
     <form method="post" action="{{ url_for('refresh_forecast') }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
       <input type="hidden" name="next" value="/">

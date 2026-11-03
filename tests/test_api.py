@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,11 +9,12 @@ from app.api.auth import hash_password, verify_password
 from app.clients.switchbot import PlugStatus
 from app.main import app
 from app.models.forecast import PriceAdjustment
+from app.models.schedule import ControlSchedule
 from app.models.settings import SystemEvent
 from app.providers.base import ForecastFetchError, Notice
 from app.services.controller import PlugSnapshot
 from app.services.forecast import check_price_notices
-from tests.conftest import TEST_PASSWORD, FakeProvider, csrf_token
+from tests.conftest import JST, TEST_PASSWORD, FakeProvider, csrf_token
 
 PAGES = [
     ("/", "ダッシュボード"),
@@ -505,3 +506,135 @@ def test_dashboard_shows_unconfirmed_plug_status(logged_in_client: TestClient) -
 
     assert "未確認" in text
     assert "ON（商用電源）" not in text.split("プラグの状態")[1].split("</dd>")[0]
+
+
+# --- 運転スケジュール（Phase 4） ---
+# FakeProvider の明日分：17:00〜19:00 が注意報、19:00〜20:00 が警報（運用時間 9:00〜18:00）
+
+
+def _tomorrow_schedules(session) -> list[ControlSchedule]:
+    tomorrow = datetime.now(JST).date() + timedelta(days=1)
+    session.expire_all()
+    return list(session.scalars(select(ControlSchedule).where(ControlSchedule.schedule_date == tomorrow).order_by(ControlSchedule.start_at)))
+
+
+def test_schedules_are_generated_after_refresh(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+
+    schedules = _tomorrow_schedules(session)
+    assert [(s.source_level.value, s.enabled) for s in schedules] == [("ADVISORY", False), ("WARNING", True)]
+
+    text = logged_in_client.get("/schedule?day=tomorrow").text
+    assert "17:00〜18:00" in text and "でんき注意報" in text and "運用時間外を除外" in text
+    assert "19:00〜20:00" in text and "でんき警報" in text
+    assert "有効にする" in text and "無効にする" in text
+
+
+def test_toggle_schedule(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+    advisory = _tomorrow_schedules(session)[0]
+
+    response = logged_in_client.post(
+        f"/schedule/{advisory.id}/toggle",
+        data={"enabled": "true", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=toggle"
+    advisory = _tomorrow_schedules(session)[0]
+    assert advisory.enabled and advisory.manually_modified
+    text = logged_in_client.get(response.headers["location"]).text
+    assert "有効・無効を切り替えました" in text
+    assert "手動・手動変更済み" in text
+
+
+def test_toggle_requires_csrf(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+    advisory = _tomorrow_schedules(session)[0]
+
+    assert logged_in_client.post(f"/schedule/{advisory.id}/toggle", data={"enabled": "true"}).status_code == 403
+
+
+def test_change_schedule_time(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+    warning = _tomorrow_schedules(session)[1]
+
+    response = logged_in_client.post(
+        f"/schedule/{warning.id}/time",
+        data={"start": "19:00", "end": "21:30", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "19:00〜21:30" in logged_in_client.get("/schedule?day=tomorrow").text
+
+
+@pytest.mark.parametrize(
+    ("index", "start", "end", "message"),
+    [
+        (0, "16:00", "19:30", "重なります"),
+        (0, "18:00", "18:30", "運用時間"),
+        (0, "17:15", "18:00", "30分単位"),
+        (0, "aa", "18:00", "HH:MM"),
+    ],
+)
+def test_change_schedule_time_validation(
+    logged_in_client: TestClient, session, index: int, start: str, end: str, message: str
+) -> None:
+    _fetch(logged_in_client)
+    schedule = _tomorrow_schedules(session)[index]
+
+    response = logged_in_client.post(
+        f"/schedule/{schedule.id}/time",
+        data={"start": start, "end": end, "csrf_token": csrf_token(logged_in_client)},
+    )
+
+    assert response.status_code == 422
+    assert message in response.text
+    assert not _tomorrow_schedules(session)[index].manually_modified
+
+
+def test_regenerate_keeps_manual_changes(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+    advisory = _tomorrow_schedules(session)[0]
+    logged_in_client.post(
+        f"/schedule/{advisory.id}/toggle", data={"enabled": "true", "csrf_token": csrf_token(logged_in_client)}
+    )
+
+    response = logged_in_client.post(
+        "/schedule/regenerate",
+        data={"next": "/schedule?day=tomorrow", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=regenerate"
+    schedules = _tomorrow_schedules(session)
+    assert schedules[0].id == advisory.id and schedules[0].enabled
+    assert schedules[1].schedule_version == 2
+
+
+def test_auto_enable_setting_enables_advisory(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+
+    response = logged_in_client.post(
+        "/settings",
+        data={**VALID_SETTINGS, "operation_start": "09:00", "operation_end": "18:00", "auto_enable": "on", "csrf_token": csrf_token(logged_in_client)},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    assert 'name="auto_enable" checked' in logged_in_client.get("/settings").text
+    assert [s.enabled for s in _tomorrow_schedules(session)] == [True, True]
+
+
+def test_forecast_page_shows_plan(logged_in_client: TestClient) -> None:
+    _fetch(logged_in_client)
+
+    text = logged_in_client.get("/forecast?day=tomorrow").text
+
+    assert '"plan": [null' in text
+    assert '"DISABLED"' in text and '"ENABLED"' in text
+
+
+def test_schedule_page_without_forecast(logged_in_client: TestClient) -> None:
+    assert "料金予報が未取得" in logged_in_client.get("/schedule?day=tomorrow").text

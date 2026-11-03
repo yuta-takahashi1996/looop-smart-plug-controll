@@ -12,6 +12,7 @@ from app.models.settings import EventCategory, unresolved_events
 from app.providers.base import ForecastFetchError
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
+from app.services import optimizer
 from app.templating import templates
 
 router = APIRouter()
@@ -53,10 +54,16 @@ def forecast(
     target = now.date() + timedelta(days=1 if day == "tomorrow" else 0)
     data = forecast_service.get_day_forecast(session, settings.looop_area, target, tz)
     view = get_price_view(request)
+    plan: list[str | None] = [None] * len(data.slots)
+    for schedule in optimizer.schedules_for(session, target):
+        for i, slot in enumerate(data.slots):
+            if schedule.start_at <= slot.start < schedule.end_at:
+                plan[i] = "ENABLED" if schedule.enabled else "DISABLED"
     chart = {
         "label": PRICE_VIEW_LABELS[view],
         "prices": [price_of(slot, view) for slot in data.slots],
         "levels": [slot.level.value for slot in data.slots],
+        "plan": plan,  # OFF 予定（ENABLED：有効、DISABLED：無効、None：予定なし）
         "labels": [slot.start.strftime("%H:%M") for slot in data.slots],
         # 当日表示のときのみ、現在時刻のコマ位置（小数）を渡す
         "nowIndex": (now.hour * 60 + now.minute) / 30 if day == "today" else None,
@@ -85,12 +92,13 @@ def refresh_forecast(
     next: Annotated[str, Form()] = "/forecast",
     session: Session = Depends(get_session),
 ) -> RedirectResponse:
-    """料金予報の手動再取得（docs/05 §5.8）。プラグは操作しないため MANUAL モードには移行しない。"""
+    """料金予報の手動再取得（docs/05 §5.8）。取得後にスケジュールを再生成する。プラグは操作しないため MANUAL モードには移行しない。"""
     settings = get_settings()
     try:
-        forecast_service.fetch_and_store(
+        saved = forecast_service.fetch_and_store(
             session, request.app.state.forecast_provider, settings.looop_area, ZoneInfo(settings.tz)
         )
+        optimizer.regenerate_days(session, settings, saved)
         result = "ok"
     except ForecastFetchError:
         result = "error"

@@ -13,6 +13,15 @@
   </ul>
   {% endif %}
 
+  <label class="flex items-start gap-3 rounded-lg border border-slate-800 p-3 text-sm">
+    <input type="checkbox" name="auto_enable" {{ "checked" if values.get("auto_enable") == "on" }}
+           class="mt-0.5 h-4 w-4 accent-sky-500">
+    <span>
+      <span class="font-medium">でんき注意報のスケジュールを自動で有効にする（AUTO_ENABLE）</span>
+      <span class="mt-1 block text-xs text-slate-400">無効の場合、注意報のスケジュールは運転スケジュール画面で個別に有効にしない限り実行しません。でんき警報のスケジュールはこの設定によらず有効になります。</span>
+    </span>
+  </label>
+
   <div class="grid gap-4 sm:grid-cols-2">
     {% for key, label, unit, attrs in fields %}
     <label class="block text-sm">

@@ -31,8 +31,11 @@ SWITCHBOT_DEVICE_ID=
 JACKERY_ACCOUNT=
 JACKERY_PASSWORD=
 JACKERY_DEVICE_ID=
-# 残量がこの値（%）以下になったら ON に戻す
+# 残量がこの値（%）以下になる（予測を含む）前に ON に戻す
 BATTERY_MIN_PERCENT=5
+# 残量の減り方の予測に使う容量（Wh）と放電効率
+BATTERY_CAPACITY_WH=1070
+BATTERY_DISCHARGE_EFFICIENCY=0.85
 
 # Schedule
 # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）

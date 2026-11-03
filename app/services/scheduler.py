@@ -1,7 +1,7 @@
 """定期ジョブ（docs/06 §6.3、docs/09-scheduling.md）。
 
 Web UI と同一プロセスで 1 つだけ起動する（二重起動防止）。現時点のジョブ：
-- 料金予報の取得：起動時、毎日 16:15（翌日分）、未取得の間は 15 分ごとに再取得
+- 料金予報の取得：起動時、毎日 16:15（翌日分）、未取得の間は 15 分ごとに再取得。取得後に制御スケジュールを再生成する
 - プラグ状態の確認：5 分ごと（SwitchBot API の上限は 1 日 10,000 回）
 - 単価に関わる Looop のお知らせの確認：起動時と毎日 1 回
 """
@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.providers.base import ForecastFetchError, ForecastProvider
 from app.services import forecast as forecast_service
+from app.services import optimizer
 from app.services.controller import PlugMonitor
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ class Jobs:
     def fetch_forecast(self) -> None:
         with self._session_factory() as session:
             try:
-                forecast_service.fetch_and_store(
+                saved = forecast_service.fetch_and_store(
                     session,
                     self._provider,
                     self._settings.looop_area,
@@ -52,6 +53,7 @@ class Jobs:
                     retry_count=self._settings.forecast_retry_count,
                     retry_wait_seconds=5,
                 )
+                optimizer.regenerate_days(session, self._settings, saved)
             except ForecastFetchError:
                 pass  # イベントは fetch_and_store で記録済み。次回の再取得ジョブで再試行する
             except Exception:
@@ -69,6 +71,13 @@ class Jobs:
                 )
         if missing:
             self.fetch_forecast()
+            return
+        # 予報はあるがスケジュールが未生成の日（初回起動時など）は生成する
+        with self._session_factory() as session:
+            days = [now.date()] + ([now.date() + timedelta(days=1)] if now.time() >= TOMORROW_FETCH_TIME else [])
+            pending = [d for d in days if not optimizer.schedules_for(session, d)]
+            if pending:
+                optimizer.regenerate_days(session, self._settings, pending)
 
     def refresh_plug_status(self) -> None:
         try:

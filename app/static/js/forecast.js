@@ -25,9 +25,24 @@
       ctx.restore();
     },
     afterDatasetsDraw(chart) {
-      if (data.nowIndex === null) return;
       const { ctx, chartArea, scales } = chart;
       const step = scales.x.getPixelForValue(1) - scales.x.getPixelForValue(0);
+      // OFF 予定を上端の帯で表示（有効：塗りつぶし、無効：破線の枠）
+      ctx.save();
+      data.plan.forEach((state, i) => {
+        if (!state) return;
+        const x = scales.x.getPixelForValue(i) - step / 2;
+        if (state === "ENABLED") {
+          ctx.fillStyle = "#34d399";
+          ctx.fillRect(x, chartArea.top, step, 8);
+        } else {
+          ctx.strokeStyle = "#94a3b8";
+          ctx.setLineDash([3, 2]);
+          ctx.strokeRect(x + 0.5, chartArea.top + 0.5, step - 1, 7);
+        }
+      });
+      ctx.restore();
+      if (data.nowIndex === null) return;
       const x = scales.x.getPixelForValue(0) - step / 2 + data.nowIndex * step;
       ctx.save();
       ctx.strokeStyle = "#fbbf24";

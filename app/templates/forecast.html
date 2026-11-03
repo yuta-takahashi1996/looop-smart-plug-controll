@@ -47,6 +47,8 @@
   <span class="inline-flex items-center gap-1"><span class="inline-block h-3 w-4 rounded-sm bg-emerald-500/25"></span>でんき日和</span>
   <span class="inline-flex items-center gap-1"><span class="inline-block h-3 w-4 rounded-sm bg-amber-400/30"></span>でんき注意報</span>
   <span class="inline-flex items-center gap-1"><span class="inline-block h-3 w-4 rounded-sm bg-rose-500/35"></span>でんき警報</span>
+  <span class="inline-flex items-center gap-1"><span class="inline-block h-1.5 w-4 rounded-sm bg-emerald-400"></span>OFF予定（有効）</span>
+  <span class="inline-flex items-center gap-1"><span class="inline-block h-1.5 w-4 rounded-sm border border-dashed border-slate-400"></span>OFF予定（無効）</span>
   {% if chart.nowIndex is not none %}
   <span class="inline-flex items-center gap-1"><span class="inline-block h-3 w-0.5 bg-amber-400"></span>現在時刻</span>
   {% endif %}
@@ -54,7 +56,7 @@
 </div>
 <p class="mt-2 text-xs text-slate-500">
   制御の判断は電源単価と でんき予報の区分（注意報・警報）で行います。{% if view == "billing" %}請求単価は実際の支払単価の目安です。{% endif %}
-  ON/OFF予定の表示は、スケジュール生成の実装（Phase 4）後に追加します。
+  OFF予定の変更は<a href="{{ url_for('schedule') }}?day={{ day }}" class="underline">運転スケジュール</a>から行えます。
 </p>
 {% elif before_publish %}
 <p class="text-sm text-slate-400">明日の予報は毎日16時頃に公開されます（16:15 に自動取得します）。</p>
