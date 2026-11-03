@@ -96,13 +96,32 @@
   </div>
   {% endcall %}
 
-  {% call card("Dry Run") %}
+  {% call card("Dry Run / 実制御", id="real-control") %}
+  {% if flash_message %}<p class="mb-3 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2 text-sm text-emerald-200" role="status">{{ flash_message }}</p>{% endif %}
+  {% if flash_error %}<p class="mb-3 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-sm text-rose-200" role="alert">{{ flash_error }}</p>{% endif %}
   <p class="text-sm">
-    現在：<span class="font-semibold {{ 'text-amber-300' if dry_run else 'text-rose-300' }}">{{ "有効（実コマンドを送信しない）" if dry_run else "無効（実制御中）" }}</span>
+    現在：<span class="font-semibold {{ 'text-amber-300' if is_dry_run(request) else 'text-rose-300' }}">{{ "Dry Run（コマンドを送信しない）" if is_dry_run(request) else "実制御中（SwitchBot へコマンドを送信する）" }}</span>
   </p>
+  {% if not is_dry_run(request) %}
+  <form method="post" action="{{ url_for('real_mode') }}" class="mt-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="enabled" value="false">
+    <button type="submit" class="w-full rounded-md border border-amber-600 px-3 py-2 text-sm text-amber-300 hover:bg-amber-900/30">Dry Run に戻す</button>
+  </form>
+  {% elif can_enable_real_control %}
+  <form method="post" action="{{ url_for('real_mode') }}" class="mt-3 space-y-2 text-sm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    <input type="hidden" name="enabled" value="true">
+    <p class="text-xs text-slate-400">実制御を開始すると、スケジュール・手動操作で実際にプラグを切り替えます。確認のため「{{ real_control_confirmation }}」と入力してください。</p>
+    <input name="confirmation" autocomplete="off" placeholder="{{ real_control_confirmation }}"
+           class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 focus:border-rose-500 focus:outline-none">
+    <button type="submit" class="w-full rounded-md bg-rose-700 px-3 py-2 font-medium hover:bg-rose-600">実制御を開始</button>
+  </form>
+  {% else %}
   <p class="mt-2 text-xs text-slate-500">
-    Dry Run の解除は、Web UI 上での明示的な確認操作を経て行います（docs/14-safety.md §14.3）。この画面からは変更できません。
+    実制御を開始するには、環境変数 <code>DRY_RUN=false</code> と SwitchBot の認証情報を設定して再起動したうえで、この画面で確認操作を行います（docs/14-safety.md §14.3）。
   </p>
+  {% endif %}
   {% endcall %}
 </div>
 

@@ -23,8 +23,10 @@
   <header class="sticky top-0 z-10 border-b border-slate-800 bg-slate-900/95 backdrop-blur">
     <div class="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3">
       <a href="{{ url_for('dashboard') }}" class="min-w-0 truncate font-semibold">Looop Smart Plug Controller</a>
-      {% if dry_run %}
+      {% if is_dry_run(request) %}
       <span class="shrink-0 rounded-full bg-amber-500/20 px-3 py-1 text-xs font-medium text-amber-300">DRY RUN</span>
+      {% else %}
+      <span class="shrink-0 rounded-full bg-rose-500/20 px-3 py-1 text-xs font-medium text-rose-300">実制御中</span>
       {% endif %}
 
       {# PC：横並びナビ #}

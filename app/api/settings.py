@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import CSRF_FORM_FIELD, verify_csrf
+from app.api.control import REAL_CONTROL_CONFIRMATION
 from app.config import get_settings
 from app.models.forecast import AdjustmentCategory, PriceAdjustment
 from app.models.settings import ControlSettings, load_control_settings, save_control_settings
@@ -28,6 +29,9 @@ FIELDS: list[tuple[str, str, str, dict[str, Any]]] = [
     ("max_daily_off_minutes", "1日の最大OFF時間", "分", {"type": "number", "min": 0, "step": 1}),
     ("min_switch_interval_minutes", "最低切り替え間隔", "分", {"type": "number", "min": 0, "step": 1}),
     ("estimated_average_power_w", "想定平均負荷", "W", {"type": "number", "min": 0, "step": 1}),
+    ("battery_min_percent", "ポータブル電源の残量の下限", "%", {"type": "number", "min": 0, "max": 100, "step": 1}),
+    ("battery_capacity_wh", "ポータブル電源の容量", "Wh", {"type": "number", "min": 1, "step": 1}),
+    ("battery_discharge_efficiency", "ポータブル電源の放電効率", "%", {"type": "number", "min": 1, "max": 100, "step": 1}),
 ]
 _LABELS = {key: label for key, label, _, _ in FIELDS}
 
@@ -43,16 +47,20 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
         "max_daily_off_minutes": str(data.max_daily_off_minutes),
         "min_switch_interval_minutes": str(data.min_switch_interval_minutes),
         "estimated_average_power_w": f"{data.estimated_average_power_w:g}",
+        "battery_min_percent": str(data.battery_min_percent),
+        "battery_capacity_wh": f"{data.battery_capacity_wh:g}",
+        "battery_discharge_efficiency": f"{data.battery_discharge_efficiency * 100:g}",
     }
 
 
 def _parse_form(form: dict[str, str]) -> ControlSettings:
     values: dict[str, Any] = {key: form.get(key, "").strip() for key in _LABELS}
     values["auto_enable"] = form.get("auto_enable") == "on"  # チェックボックスは未チェックだと送信されない
-    try:
-        values["round_trip_efficiency"] = float(values["round_trip_efficiency"]) / 100
-    except ValueError:
-        pass  # 数値でない場合は ControlSettings の検証でエラーにする
+    for key in ("round_trip_efficiency", "battery_discharge_efficiency"):  # 画面では％で入力する
+        try:
+            values[key] = float(values[key]) / 100
+        except ValueError:
+            pass  # 数値でない場合は ControlSettings の検証でエラーにする
     return ControlSettings.model_validate(values)
 
 
@@ -91,6 +99,8 @@ def _render(
     errors: list[str] | None = None,
     adjustment_form: dict[str, str] | None = None,
     adjustment_errors: list[str] | None = None,
+    flash_message: str | None = None,
+    flash_error: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
     context: dict[str, Any] = {"fields": FIELDS, "values": values, "saved": saved, "errors": errors or []}
@@ -102,6 +112,10 @@ def _render(
         context |= _adjustments_context(session)
         context["adjustment_form"] = adjustment_form or {}
         context["adjustment_errors"] = adjustment_errors or []
+        context["flash_message"] = flash_message
+        context["flash_error"] = flash_error
+        context["can_enable_real_control"] = request.app.state.control.can_enable_real_control
+        context["real_control_confirmation"] = REAL_CONTROL_CONFIRMATION
     return templates.TemplateResponse(request, template, context, status_code=status_code)
 
 
@@ -110,8 +124,13 @@ def _current_values(session: Session) -> dict[str, str]:
 
 
 @router.get("/settings", response_class=HTMLResponse, name="settings")
-def settings_page(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-    return _render(request, session, _current_values(session))
+def settings_page(
+    request: Request,
+    message: str | None = None,
+    error: str | None = None,
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
+    return _render(request, session, _current_values(session), flash_message=message, flash_error=error)
 
 
 @router.post("/settings", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])

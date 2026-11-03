@@ -35,6 +35,9 @@ class ControlSettings(BaseModel):
     max_daily_off_minutes: int = Field(ge=0)
     min_switch_interval_minutes: int = Field(ge=0)
     estimated_average_power_w: float = Field(ge=0)
+    battery_min_percent: int = Field(ge=0, le=100)
+    battery_capacity_wh: float = Field(gt=0)
+    battery_discharge_efficiency: float = Field(gt=0, le=1)
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "ControlSettings":
@@ -62,6 +65,17 @@ def save_control_settings(session: Session, data: ControlSettings) -> None:
     session.commit()
 
 
+def get_value(session: Session, key: str) -> str | None:
+    """system_settings の任意の値（制御モードなど、制御条件以外の保持値）。"""
+    row = session.get(SystemSetting, key)
+    return row.value if row is not None else None
+
+
+def set_value(session: Session, key: str, value: str) -> None:
+    session.merge(SystemSetting(key=key, value=value, updated_at=datetime.now(UTC)))
+    session.commit()
+
+
 class EventLevel(enum.StrEnum):
     INFO = "INFO"
     WARNING = "WARNING"
@@ -70,7 +84,8 @@ class EventLevel(enum.StrEnum):
 
 class EventCategory(enum.StrEnum):
     FORECAST = "FORECAST"  # 料金予報の取得・検証
-    SWITCHBOT = "SWITCHBOT"  # SwitchBot API との通信
+    SWITCHBOT = "SWITCHBOT"  # SwitchBot API との通信・コマンドの失敗
+    BATTERY = "BATTERY"  # ポータブル電源（Jackery）の残量取得
     PRICE_NOTICE = "PRICE_NOTICE"  # 単価に関わる Looop のお知らせ（加算額の確認が必要）
 
 

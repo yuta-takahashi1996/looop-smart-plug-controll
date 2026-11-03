@@ -140,6 +140,6 @@
   <p>でんき警報のスケジュールは常に有効、でんき注意報は「自動適用（AUTO_ENABLE）」が{{ "有効" if control.auto_enable else "無効" }}のため{{ "自動で有効" if control.auto_enable else "個別に有効にしない限り実行しません" }}。設定は<a href="{{ url_for('settings') }}" class="underline">設定画面</a>で変更できます。</p>
   <p>時間は30分単位で変更でき、他のスケジュールと重ならず、間隔が0分（連続）か最低切り替え間隔（{{ control.min_switch_interval_minutes }}分）以上である必要があります。でんき注意報は運用時間（{{ control.operation_start.strftime("%H:%M") }}〜{{ control.operation_end.strftime("%H:%M") }}）・最大連続OFF（{{ control.max_continuous_off_minutes }}分）・1日の最大OFF（{{ control.max_daily_off_minutes }}分）の範囲内に限ります。</p>
   <p>手動で変更したスケジュールは、予報の再取得や再生成で上書きされません。</p>
-  <p>有効なスケジュールは1分ごとの制御サイクルで実行します。実行時にも OFF 時間の制限を確認し、到達した場合は途中で ON に戻します（中断）。{% if dry_run %}Dry Run 中のため、プラグは操作せず履歴に記録するだけです。{% endif %}</p>
+  <p>有効なスケジュールは1分ごとの制御サイクルで実行します。実行時にも OFF 時間の制限を確認し、到達した場合は途中で ON に戻します（中断）。{% if is_dry_run(request) %}Dry Run 中のため、プラグは操作せず履歴に記録するだけです。{% endif %}</p>
 </div>
 {% endblock %}

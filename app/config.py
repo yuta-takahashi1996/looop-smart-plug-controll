@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     jackery_account: str = ""
     jackery_password: SecretStr = SecretStr("")
     jackery_device_id: str = ""
+    # 残量の下限（%）と、残量の減り方の予測に使う容量・放電効率（docs/07 §7.7）
+    battery_min_percent: int = Field(default=5, ge=0, le=100)
+    battery_capacity_wh: float = Field(default=1070, gt=0)
+    battery_discharge_efficiency: float = Field(default=0.85, gt=0, le=1)
 
     # Schedule（運用時間・OFF時間の制限、推定節約額の算出に使う値）
     # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）

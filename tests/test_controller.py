@@ -24,7 +24,8 @@ from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.repositories.database import SessionLocal
 from app.services import forecast as forecast_service
 from app.services import optimizer
-from app.services.controller import ControlService, PlugMonitor
+from app.services import safety
+from app.services.controller import BatteryMonitor, ControlService, PlugMonitor
 from tests.conftest import JST
 
 # --- SwitchBot クライアント ---
@@ -368,3 +369,239 @@ def test_initialize_failure_does_not_raise(session: Session) -> None:
     control.initialize(_at(8))  # 例外を外へ出さない
 
     assert control.mode == "SAFE"
+
+
+# --- 実制御（Phase 6）：SwitchBot・Jackery は模擬する ---
+
+
+class FakePlug:
+    """コマンドを受けると、指定回数の状態取得の後に状態が変わるプラグ。"""
+
+    def __init__(self, power: str = "ON") -> None:
+        self.configured = True
+        self.power = power
+        self.commands: list[str] = []
+        self.ignore_commands = False  # コマンドを無視する（状態が変わらない）
+        self.status_error = False  # 状態取得に失敗する
+
+    def get_status(self) -> switchbot.PlugStatus:
+        if self.status_error:
+            raise SwitchBotError("デバイスがオフラインです")
+        return switchbot.PlugStatus(power=self.power, device_type="Plug Mini (JP)", raw={})  # type: ignore[arg-type]
+
+    def send_power_command(self, state: str) -> None:
+        assert state in ("ON", "OFF")  # toggle は使わない
+        self.commands.append(state)
+        if not self.ignore_commands:
+            self.power = state
+
+
+class FakeBattery(BatteryMonitor):
+    def __init__(self, readings: list[tuple[int, float] | None]) -> None:
+        super().__init__(None, "", SessionLocal)
+        self.readings = readings
+        self.reads = 0
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    def read(self, now: datetime) -> safety.BatteryReading | None:
+        self.reads += 1
+        value = self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
+        if value is None:
+            return None
+        reading = safety.BatteryReading(value[0], value[1], now)
+        self.last = reading
+        self.samples.append(value[1])
+        return reading
+
+
+def _real_control(plug: FakePlug, battery: BatteryMonitor | None = None) -> ControlService:
+    settings = get_settings().model_copy(update={"dry_run": False})
+    control = ControlService(settings, SessionLocal, switchbot=plug, battery=battery, sleep=lambda _: None)  # type: ignore[arg-type]
+    control.set_real_control(True)
+    return control
+
+
+def _results(session: Session) -> list[tuple[str, str, str | None, str]]:
+    session.expire_all()
+    return [
+        (log.source.value, log.requested_state.value, log.actual_state.value if log.actual_state else None, log.result.value)
+        for log in session.scalars(select(ControlLog).order_by(ControlLog.id))
+    ]
+
+
+def test_real_control_requires_env_and_confirmation(session: Session) -> None:
+    control = ControlService(get_settings(), SessionLocal, switchbot=FakePlug(), sleep=lambda _: None)  # type: ignore[arg-type]
+
+    assert control.dry_run
+    assert not control.can_enable_real_control
+    with pytest.raises(ValueError, match="DRY_RUN=false"):
+        control.set_real_control(True)
+
+    settings = get_settings().model_copy(update={"dry_run": False})
+    control = ControlService(settings, SessionLocal, switchbot=FakePlug(), sleep=lambda _: None)  # type: ignore[arg-type]
+    assert control.dry_run  # 画面で有効にするまでは Dry Run
+    control.set_real_control(True)
+    assert not control.dry_run
+    control.set_real_control(False)
+    assert control.dry_run
+
+
+def test_real_control_sends_command_and_verifies(session: Session) -> None:
+    plug = FakePlug("ON")
+    control = _real_control(plug)
+    _prepare(session, {range(20, 22): A})
+
+    control.run_cycle(_at(10))  # 初期化（すでに ON なので送信しない）→ OFF
+    control.run_cycle(_at(11))  # 終了 → ON
+
+    assert plug.commands == ["OFF", "ON"]
+    assert _results(session) == [
+        ("SAFETY", "ON", "ON", "SUCCESS"),
+        ("AUTO", "OFF", "OFF", "SUCCESS"),
+        ("AUTO", "ON", "ON", "SUCCESS"),
+    ]
+
+
+def test_initialization_turns_plug_on(session: Session) -> None:
+    plug = FakePlug("OFF")
+    control = _real_control(plug)
+
+    control.initialize(_at(8))
+
+    assert plug.commands == ["ON"]
+    log = session.scalars(select(ControlLog)).one()
+    assert (log.previous_state, log.actual_state, log.result) == (PlugState.OFF, PlugState.ON, ControlResult.SUCCESS)
+
+
+def test_failed_command_is_not_treated_as_success(session: Session) -> None:
+    plug = FakePlug("ON")
+    plug.ignore_commands = True
+    control = _real_control(plug)
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))
+
+    assert plug.commands == ["OFF", "OFF"]  # 1回だけ送り直す
+    assert _results(session)[-1] == ("AUTO", "OFF", "ON", "FAILED")
+    assert control.state == PlugState.ON
+    assert [e.category for e in unresolved_events(session)] == [EventCategory.SWITCHBOT]
+
+    control.run_cycle(_at(10, 2))  # 5分間は同じ要求を繰り返さない
+    assert plug.commands == ["OFF", "OFF"]
+    plug.ignore_commands = False
+    control.run_cycle(_at(10, 6))
+    assert plug.commands == ["OFF", "OFF", "OFF"]
+    session.expire_all()
+    assert unresolved_events(session) == []
+
+
+def test_unconfirmed_state_returns_to_safe(session: Session) -> None:
+    plug = FakePlug("ON")
+    control = _real_control(plug)
+    _prepare(session, {range(20, 24): A})
+    control.run_cycle(_at(10))
+    plug.status_error = True
+
+    control.request(session, PlugState.ON, ControlSource.AUTO, "test", now=_at(10, 1))
+
+    assert _results(session)[-1] == ("AUTO", "ON", None, "UNCONFIRMED")
+    assert control.state is None and control.mode == "SAFE"
+
+
+def test_manual_operation_switches_to_manual_mode(session: Session) -> None:
+    plug = FakePlug("ON")
+    control = _real_control(plug)
+    _prepare(session, {range(20, 24): A})
+    control.run_cycle(_at(10))  # 自動で OFF
+
+    control.manual_power(PlugState.ON, _at(10, 5))
+
+    assert control.mode == "MANUAL"
+    assert _schedules(session)[0].status == ScheduleStatus.ABORTED
+    control.run_cycle(_at(10, 10))  # MANUAL の間はスケジュールを実行しない
+    assert plug.commands == ["OFF", "ON"]
+    assert _results(session)[-1][0] == "MANUAL"
+
+    # 再起動しても MANUAL を引き継ぐ
+    assert _real_control(plug).control_mode == "MANUAL"
+
+    control.start_auto()
+    assert control.control_mode == "AUTO"
+
+
+def test_stop_auto_keeps_plug_state(session: Session) -> None:
+    plug = FakePlug("ON")
+    control = _real_control(plug)
+    _prepare(session, {range(20, 24): A})
+    control.run_cycle(_at(10))
+
+    control.stop_auto(_at(10, 5))
+
+    assert plug.commands == ["OFF"]
+    assert control.mode == "MANUAL" and control.state == PlugState.OFF
+
+
+def test_manual_off_without_battery_returns_on_after_max_continuous(session: Session) -> None:
+    plug = FakePlug("ON")
+    control = _real_control(plug, FakeBattery([None]))
+    control.initialize(_at(8))
+
+    control.manual_power(PlugState.OFF, _at(9))
+    control.run_cycle(_at(10, 59))
+    assert control.state == PlugState.OFF
+    control.run_cycle(_at(11, 0))
+
+    assert control.state == PlugState.ON
+    assert _results(session)[-1] == ("SAFETY", "ON", "ON", "SUCCESS")
+    assert control.mode == "MANUAL"
+
+
+def test_manual_off_is_rejected_when_battery_low(session: Session) -> None:
+    control = _real_control(FakePlug("ON"), FakeBattery([(4, 150.0)]))
+
+    with pytest.raises(ValueError, match="下限"):
+        control.manual_power(PlugState.OFF, _at(9))
+
+
+def test_schedule_is_not_started_when_battery_projection_is_low(session: Session) -> None:
+    # 残量6%・消費電力 300W：5分で約2.75%減り、下限5%を下回る見込み
+    plug = FakePlug("ON")
+    control = _real_control(plug, FakeBattery([(6, 300.0)]))
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))
+
+    assert plug.commands == []
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.ABORTED and "下限" in s.status_reason
+
+
+def test_running_schedule_is_stopped_before_battery_runs_out(session: Session) -> None:
+    plug = FakePlug("ON")
+    battery = FakeBattery([(50, 150.0), (6, 150.0)])
+    control = _real_control(plug, battery)
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))  # 開始時に取得（50%）→ OFF
+    control.run_cycle(_at(10, 2))  # 5分以内は取得しない
+    assert battery.reads == 1
+    control.run_cycle(_at(10, 5))  # 5分ごとに取得（6%）→ 150W で5分後に約4.6%となり下限を下回る見込み
+
+    assert plug.commands == ["OFF", "ON"]
+    assert _results(session)[-1][0] == "SAFETY"
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.ABORTED and "下限" in s.status_reason
+
+
+def test_warning_runs_outside_operation_hours_when_battery_known(session: Session) -> None:
+    plug = FakePlug("ON")
+    control = _real_control(plug, FakeBattery([(90, 150.0)]))
+    _prepare(session, {range(38, 40): W})  # 19:00〜20:00（運用時間外）
+
+    control.run_cycle(_at(19))
+
+    assert plug.commands == ["OFF"]
+    assert _schedules(session)[0].status == ScheduleStatus.RUNNING

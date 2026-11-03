@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.auth import verify_csrf
 from app.api.forecast import PriceView, get_price_view, price_of
 from app.config import Settings, get_settings
-from app.models.schedule import ControlLog, ControlSchedule, ScheduleStatus
+from app.models.schedule import ControlLog, ControlSchedule, PlugState, ScheduleStatus
 from app.models.settings import EventCategory, EventLevel, SystemEvent, load_control_settings, unresolved_events
 from app.providers.base import ForecastLevel
 from app.repositories.database import get_session
@@ -137,6 +137,37 @@ def _control_summary(request: Request, session: Session, settings: Settings, now
     )
 
 
+@dataclass(frozen=True)
+class BatterySummary:
+    configured: bool
+    percent: int | None
+    output_w: float | None
+    read_at: datetime | None
+    error: str | None
+    eta: datetime | None  # OFF 中に下限へ達する見込み時刻
+    min_percent: int
+
+
+def _battery_summary(request: Request, session: Session, settings: Settings, now: datetime) -> BatterySummary:
+    control = request.app.state.control
+    battery = control.battery
+    reading = battery.last
+    limits = load_control_settings(session, settings)
+    eta = None
+    if reading is not None and control.state == PlugState.OFF:
+        power = max(reading.output_w, battery.average_output_w() or 0.0)
+        eta = safety.time_to_min_percent(reading, power, limits)
+    return BatterySummary(
+        configured=battery.configured,
+        percent=reading.percent if reading else None,
+        output_w=reading.output_w if reading else None,
+        read_at=reading.at if reading else None,
+        error=battery.last_error,
+        eta=eta,
+        min_percent=limits.battery_min_percent,
+    )
+
+
 def _system_status(events: list[SystemEvent]) -> str:
     if any(e.level == EventLevel.ERROR for e in events):
         return "ERROR"
@@ -158,16 +189,24 @@ def _context(request: Request, session: Session) -> dict:
         "events": events,
         "system_status": _system_status(events),
         "control": _control_summary(request, session, settings, now),
+        "control_mode": request.app.state.control.control_mode.value,
+        "battery": _battery_summary(request, session, settings, now),
         **_schedule_summary(session, now),
     }
 
 
 @router.get("/", response_class=HTMLResponse, name="dashboard")
 def dashboard(
-    request: Request, refresh: Literal["ok", "error"] | None = None, session: Session = Depends(get_session)
+    request: Request,
+    refresh: Literal["ok", "error"] | None = None,
+    message: str | None = None,
+    error: str | None = None,
+    session: Session = Depends(get_session),
 ) -> HTMLResponse:
     return templates.TemplateResponse(
-        request, "dashboard.html", {**_context(request, session), "refresh_result": refresh}
+        request,
+        "dashboard.html",
+        {**_context(request, session), "refresh_result": refresh, "flash_message": message, "flash_error": error},
     )
 
 

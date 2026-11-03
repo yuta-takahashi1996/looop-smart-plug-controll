@@ -55,7 +55,7 @@
 {% endif %}
 {% endcall %}
 <p class="mt-2 text-xs text-slate-500">
-  {% if dry_run %}Dry Run 中のため、SwitchBot へのコマンドは送信していません。「Dry Run」の行は実行するはずだった操作です。{% endif %}
+  {% if is_dry_run(request) %}Dry Run 中のため、SwitchBot へのコマンドは送信していません。「Dry Run」の行は実行するはずだった操作です。{% endif %}
   操作元：AUTO＝スケジュール、MANUAL＝手動操作、SAFETY＝安全制御（起動・終了時の ON 復帰、制限への到達など）。
 </p>
 {% endblock %}
