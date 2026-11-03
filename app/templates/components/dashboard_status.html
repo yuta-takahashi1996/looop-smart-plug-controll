@@ -52,6 +52,7 @@
       <span class="text-sm text-amber-300">未確認</span>{{ refresh_button("plug", "プラグの状態") }}
       {% if plug.error %}<span class="block text-xs text-slate-500">{{ plug.error }}</span>{% endif %}
       {% endif %}
+      {% if refresh_target == "plug" %}<span class="block text-xs {{ 'text-emerald-300' if refresh_ok else 'text-rose-300' }}" role="status">{{ refresh_message }}</span>{% endif %}
     </dd>
     <dt class="text-slate-400">ポータブル電源</dt>
     <dd>
@@ -65,6 +66,7 @@
       <span class="text-xs text-slate-500">未取得（スケジュール開始時と OFF 中に取得します）</span>{{ refresh_button("battery", "ポータブル電源の状態") }}
       {% endif %}
       {% if battery.error %}<span class="block text-xs text-rose-300">{{ battery.error }}</span>{% endif %}
+      {% if refresh_target == "battery" %}<span class="block text-xs {{ 'text-emerald-300' if refresh_ok else 'text-rose-300' }}" role="status">{{ refresh_message }}</span>{% endif %}
     </dd>
     <dt class="text-slate-400">システム</dt>
     <dd>{{ state_badge(system_status) }}</dd>

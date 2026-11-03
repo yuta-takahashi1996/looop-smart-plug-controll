@@ -775,3 +775,16 @@ def test_settings_are_grouped(logged_in_client: TestClient) -> None:
 
     for title in ("スケジュール", "運用時間", "OFF 時間の制限", "ポータブル電源", "推定節約額"):
         assert f">{title}</legend>" in text
+
+
+def test_refresh_status_with_htmx_returns_partial(logged_in_client: TestClient) -> None:
+    response = logged_in_client.post(
+        "/control/refresh/plug",
+        headers={"HX-Request": "true", "X-CSRF-Token": csrf_token(logged_in_client)},
+    )
+
+    assert response.status_code == 200
+    assert "<html" not in response.text  # 画面全体ではなく状態表示だけを返す
+    assert "制御情報" in response.text
+    assert "取得できませんでした" in response.text and "text-rose-300" in response.text
+    assert 'hx-post="http://testserver/control/refresh/plug"' in response.text
