@@ -245,7 +245,6 @@ def test_regenerate_uses_saved_settings(session: Session) -> None:
         estimated_average_power_w=150,
         battery_min_percent=5,
         battery_capacity_wh=1070,
-        battery_discharge_efficiency=0.85,
     )
     save_control_settings(session, control)
     _store(session, _levels({range(20, 22): A}))
@@ -326,7 +325,6 @@ def test_gap_validation(session: Session, two_schedules: list[ControlSchedule]) 
         estimated_average_power_w=150,
         battery_min_percent=5,
         battery_capacity_wh=1070,
-        battery_discharge_efficiency=0.85,
     )
     save_control_settings(session, control)
     advisory = two_schedules[0]

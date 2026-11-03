@@ -24,14 +24,13 @@ router = APIRouter()
 FIELDS: list[tuple[str, str, str, dict[str, Any]]] = [
     ("operation_start", "運用開始時刻", "", {"type": "time"}),
     ("operation_end", "運用終了時刻", "", {"type": "time"}),
-    ("round_trip_efficiency", "充放電往復効率", "%", {"type": "number", "min": 1, "max": 100, "step": 1}),
+    ("round_trip_efficiency", "ポータブル電源の変換効率（節約額の計算・残量の予測に使用）", "%", {"type": "number", "min": 1, "max": 100, "step": 1}),
     ("max_continuous_off_minutes", "最大連続OFF時間", "分", {"type": "number", "min": 0, "step": 1}),
     ("max_daily_off_minutes", "1日の最大OFF時間", "分", {"type": "number", "min": 0, "step": 1}),
     ("min_switch_interval_minutes", "最低切り替え間隔", "分", {"type": "number", "min": 0, "step": 1}),
     ("estimated_average_power_w", "想定平均負荷", "W", {"type": "number", "min": 0, "step": 1}),
     ("battery_min_percent", "ポータブル電源の残量の下限", "%", {"type": "number", "min": 0, "max": 100, "step": 1}),
     ("battery_capacity_wh", "ポータブル電源の容量", "Wh", {"type": "number", "min": 1, "step": 1}),
-    ("battery_discharge_efficiency", "ポータブル電源の放電効率", "%", {"type": "number", "min": 1, "max": 100, "step": 1}),
 ]
 _LABELS = {key: label for key, label, _, _ in FIELDS}
 
@@ -49,18 +48,16 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
         "estimated_average_power_w": f"{data.estimated_average_power_w:g}",
         "battery_min_percent": str(data.battery_min_percent),
         "battery_capacity_wh": f"{data.battery_capacity_wh:g}",
-        "battery_discharge_efficiency": f"{data.battery_discharge_efficiency * 100:g}",
     }
 
 
 def _parse_form(form: dict[str, str]) -> ControlSettings:
     values: dict[str, Any] = {key: form.get(key, "").strip() for key in _LABELS}
     values["auto_enable"] = form.get("auto_enable") == "on"  # チェックボックスは未チェックだと送信されない
-    for key in ("round_trip_efficiency", "battery_discharge_efficiency"):  # 画面では％で入力する
-        try:
-            values[key] = float(values[key]) / 100
-        except ValueError:
-            pass  # 数値でない場合は ControlSettings の検証でエラーにする
+    try:
+        values["round_trip_efficiency"] = float(values["round_trip_efficiency"]) / 100  # 画面では％で入力する
+    except ValueError:
+        pass  # 数値でない場合は ControlSettings の検証でエラーにする
     return ControlSettings.model_validate(values)
 
 

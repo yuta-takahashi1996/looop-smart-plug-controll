@@ -74,7 +74,8 @@ def battery_known(reading: BatteryReading | None, now: datetime) -> bool:
 
 
 def drain_percent_per_hour(power_w: float, control: ControlSettings) -> float:
-    return power_w / control.battery_discharge_efficiency / control.battery_capacity_wh * 100
+    # 出力（家電の消費電力）より、変換ロスの分だけ多く電池から減る。効率は節約額の計算と共用（安全側に低めになる）
+    return power_w / control.round_trip_efficiency / control.battery_capacity_wh * 100
 
 
 def projected_percent(reading: BatteryReading, power_w: float, until: datetime, control: ControlSettings) -> float:

@@ -20,7 +20,6 @@ CONTROL = ControlSettings(
     estimated_average_power_w=150,
         battery_min_percent=5,
         battery_capacity_wh=1070,
-        battery_discharge_efficiency=0.85,
 )
 
 

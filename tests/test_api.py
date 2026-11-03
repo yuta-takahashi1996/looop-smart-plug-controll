@@ -36,7 +36,6 @@ VALID_SETTINGS = {
     "estimated_average_power_w": "200",
     "battery_min_percent": "5",
     "battery_capacity_wh": "1070",
-    "battery_discharge_efficiency": "85",
 }
 
 
@@ -242,7 +241,7 @@ def test_settings_accepts_csrf_header(logged_in_client: TestClient) -> None:
     [
         ({"operation_start": "18:00", "operation_end": "09:00"}, "運用開始時刻は運用終了時刻より前"),
         ({"max_continuous_off_minutes": "200", "max_daily_off_minutes": "100"}, "最大連続OFF時間は"),
-        ({"round_trip_efficiency": "120"}, "充放電往復効率"),
+        ({"round_trip_efficiency": "120"}, "ポータブル電源の変換効率"),
         ({"estimated_average_power_w": "abc"}, "想定平均負荷"),
     ],
 )

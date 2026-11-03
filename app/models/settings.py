@@ -37,7 +37,6 @@ class ControlSettings(BaseModel):
     estimated_average_power_w: float = Field(ge=0)
     battery_min_percent: int = Field(ge=0, le=100)
     battery_capacity_wh: float = Field(gt=0)
-    battery_discharge_efficiency: float = Field(gt=0, le=1)
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "ControlSettings":
