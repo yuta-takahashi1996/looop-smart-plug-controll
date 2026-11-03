@@ -450,6 +450,9 @@ class ControlService:
                 if self._state == PlugState.OFF and self._should_retry(PlugState.ON, now):
                     self.request(session, PlugState.ON, ControlSource.AUTO, "スケジュール終了", now=now)
                 return
+            if active.target_state == PlugState.ON:
+                self._run_on_schedule(session, active, now)
+                return
 
             decision = self._check_schedule(session, active, schedules, now)
             if decision.allowed:
@@ -472,6 +475,14 @@ class ControlService:
                 active.status = ScheduleStatus.ABORTED
                 active.status_reason = decision.reason
                 session.commit()
+
+    def _run_on_schedule(self, session: Session, schedule: ControlSchedule, now: datetime) -> None:
+        """任意 ON のスケジュール（docs/07 §7.9）：OFF を要求せず、OFF 中なら ON に戻す。安全側のため判定は不要。"""
+        if schedule.status == ScheduleStatus.PENDING:
+            schedule.status = ScheduleStatus.RUNNING
+            session.commit()
+        if self._state != PlugState.ON and self._should_retry(PlugState.ON, now):
+            self.request(session, PlugState.ON, ControlSource.AUTO, schedule.reason, schedule_id=schedule.id, now=now)
 
     def _check_schedule(
         self, session: Session, schedule: ControlSchedule, schedules: list[ControlSchedule], now: datetime
@@ -524,9 +535,12 @@ class ControlService:
         self, session: Session, schedule: ControlSchedule, end: datetime, status: ScheduleStatus, reason: str | None
     ) -> None:
         """実行中のスケジュールを終了し、実行した時間帯の推定節約額と実測値を記録する。"""
-        schedule.executed_end_at = end
         schedule.status = status
         schedule.status_reason = reason
+        if schedule.target_state == PlugState.ON:
+            session.commit()  # 任意 ON は OFF 時間・節約額・実測値の記録の対象外
+            return
+        schedule.executed_end_at = end
         self._record_measurements(schedule)
         forecast = forecast_service.get_day_forecast(session, self._settings.looop_area, schedule.schedule_date, self._tz)
         if forecast.slots and schedule.executed_start_at is not None:

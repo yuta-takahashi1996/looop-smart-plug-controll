@@ -12,6 +12,7 @@ Phase 7（運用改善、[docs/15-roadmap.md](docs/15-roadmap.md)）を実装中
 - 実行：`app/services/controller.py` の `ControlService` が毎分の制御サイクル（`run_cycle`）で有効なスケジュールを実行し、`control_logs` に記録する。手動操作（`manual_power`）・自動制御の停止／再開も同じ経路。実行時の安全判定（OFF 時間の制限・残量の予測）は `app/services/safety.py`、残量の取得は `BatteryMonitor`。
 - 実制御：`DRY_RUN=false` かつ設定画面で「実制御を開始」と入力した場合のみ SwitchBot へ送信する（`set_real_control`、`app/api/control.py`）。送信後は状態を再取得して照合し、照合できなければ成功扱いにしない。テストでは SwitchBot・Jackery を模擬し、実機には送信しない。
 - 画面：すべて実データ。ヘッダーに Dry Run／実制御中を表示する。
+- 任意スケジュール（Phase 8、[docs/07-control-logic.md](docs/07-control-logic.md) §7.9）：`schedule_rules` のルール（ON／OFF・1回のみ／毎日／曜日指定）を `optimizer.regenerate` が当日・翌日分の `control_schedules`（`source_level=CUSTOM`）に展開する。予報の有無によらず展開し、でんき予報のスケジュールより優先する。任意 OFF にはでんき注意報と同じ制限を適用する（`validate_rule`・`safety.check_off`）。
 - 運用：`app/services/maintenance.py` が日次集計（`daily_summaries`）・バックアップ（`data/backups/`）・古いデータの削除を行う。本番は Docker（`docker compose up -d --build`）で動かす。`.env` の `$` を含む値はシングルクォートで囲む。
 
 `docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。
@@ -123,7 +124,7 @@ Web UI（手動操作） ──────────────→  Control 
 
 ## データモデル（SQLite、[docs/10-database.md](docs/10-database.md)）
 
-7テーブル構成：`forecast_prices`（30分単位の電源料金単価）、`price_adjustments`（請求単価への加算額。適用期間付き）、`control_schedules`（予定されたON/OFF計画。理由と推定節約額を含む）、`control_logs`（実際の全操作履歴。`AUTO`/`MANUAL`/`SAFETY`のいずれかに分類し、操作前・要求・確認後の状態を記録）、`system_settings`（key/value。**秘匿情報は保存しない** — 認証情報は環境変数のみで管理する）、`system_events`、`daily_summaries`。
+8テーブル構成：`forecast_prices`（30分単位の電源料金単価）、`price_adjustments`（請求単価への加算額。適用期間付き）、`control_schedules`（予定されたON/OFF計画。理由と推定節約額を含む）、`control_logs`（実際の全操作履歴。`AUTO`/`MANUAL`/`SAFETY`のいずれかに分類し、操作前・要求・確認後の状態を記録）、`system_settings`（key/value。**秘匿情報は保存しない** — 認証情報は環境変数のみで管理する）、`system_events`、`daily_summaries`、`schedule_rules`（任意スケジュールのルール。当日・翌日分を `control_schedules` に展開）。
 
 ## Dry Runモード
 

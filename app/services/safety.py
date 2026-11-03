@@ -7,9 +7,8 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from app.models.schedule import ControlSchedule
+from app.models.schedule import ControlSchedule, ScheduleSource
 from app.models.settings import ControlSettings
-from app.providers.base import ForecastLevel
 
 
 @dataclass(frozen=True)
@@ -38,13 +37,14 @@ def check_off(
 ) -> OffDecision:
     """schedule の OFF を now（表示用のタイムゾーンの日時）の時点で開始・継続してよいか。
 
-    battery_known: ポータブル電源の残量を取得できているか（Phase 6 で連携する。それまでは常に False）。
+    battery_known: ポータブル電源の残量を取得できているか。
+    任意スケジュールはユーザーが指定した時間帯のため、予報が未取得でも実行する（docs/14 §14.2）。
     """
-    if not has_forecast:
+    if not has_forecast and schedule.source_level != ScheduleSource.CUSTOM:
         return OffDecision(False, "料金予報が未取得のため OFF にしません")
 
-    # 注意報は常に、警報は残量を取得できない間だけ、OFF 時間の制限を実行時にも適用する
-    if schedule.source_level == ForecastLevel.ADVISORY or not battery_known:
+    # 注意報・任意 OFF は常に、警報は残量を取得できない間だけ、OFF 時間の制限を実行時にも適用する
+    if schedule.source_level != ScheduleSource.WARNING or not battery_known:
         if not control.operation_start <= now.time() < control.operation_end:
             return OffDecision(False, "運用時間外のため ON に戻します")
         if schedule.executed_start_at is not None:

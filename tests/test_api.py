@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +9,7 @@ from app.api.auth import hash_password, verify_password
 from app.clients.switchbot import PlugStatus
 from app.main import app
 from app.models.forecast import PriceAdjustment
-from app.models.schedule import ControlLog, ControlSchedule
+from app.models.schedule import ControlLog, ControlSchedule, ScheduleRule
 from app.models.settings import SystemEvent
 from app.providers.base import ForecastFetchError, Notice
 from app.services.controller import PlugSnapshot
@@ -643,6 +643,131 @@ def test_forecast_page_shows_plan(logged_in_client: TestClient) -> None:
 
 def test_schedule_page_without_forecast(logged_in_client: TestClient) -> None:
     assert "料金予報が未取得" in logged_in_client.get("/schedule?day=tomorrow").text
+
+
+# --- 任意スケジュール（Phase 8） ---
+
+
+def _tomorrow() -> date:
+    return datetime.now(JST).date() + timedelta(days=1)
+
+
+def _post_rule(client: TestClient, path: str = "/schedule/rules", **fields) -> Response:
+    data = {
+        "name": "昼の OFF",
+        "target_state": "OFF",
+        "repeat_type": "ONCE",
+        "target_date": _tomorrow().isoformat(),
+        "start": "10:00",
+        "end": "11:00",
+        "day": "tomorrow",
+        "csrf_token": csrf_token(client),
+        **fields,
+    }
+    return client.post(path, data=data, follow_redirects=False)
+
+
+def test_create_custom_rule(logged_in_client: TestClient, session) -> None:
+    response = _post_rule(logged_in_client)
+
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=rule_created"
+    schedules = _tomorrow_schedules(session)
+    assert [(s.source_level.value, s.target_state, s.enabled) for s in schedules] == [("CUSTOM", "OFF", True)]
+    text = logged_in_client.get(response.headers["location"]).text
+    assert "任意スケジュールを追加しました" in text
+    assert "昼の OFF" in text and "任意（OFF）" in text and "のみ" in text
+
+
+def test_create_weekly_on_rule(logged_in_client: TestClient, session) -> None:
+    weekday = str(_tomorrow().weekday())
+    response = logged_in_client.post(
+        "/schedule/rules",
+        data={
+            "name": "在宅",
+            "target_state": "ON",
+            "repeat_type": "WEEKLY",
+            "weekdays": [weekday],
+            "start": "19:00",
+            "end": "00:00",
+            "day": "tomorrow",
+            "csrf_token": csrf_token(logged_in_client),
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    text = logged_in_client.get("/schedule?day=tomorrow").text
+    assert "19:00〜24:00" in text and "任意（ON）" in text and "毎週" in text
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"start": "08:00", "end": "09:00"}, "運用時間"),
+        ({"start": "aa"}, "HH:MM"),
+        ({"target_date": "x"}, "YYYY-MM-DD"),
+        ({"name": " "}, "名前を入力"),
+        ({"repeat_type": "WEEKLY"}, "曜日を1つ以上"),
+    ],
+)
+def test_custom_rule_validation_errors(logged_in_client: TestClient, session, fields: dict, message: str) -> None:
+    response = _post_rule(logged_in_client, **fields)
+
+    assert response.status_code == 422
+    assert message in response.text
+    assert session.scalars(select(ScheduleRule)).all() == []
+
+
+def test_custom_rule_overlap_is_rejected(logged_in_client: TestClient) -> None:
+    _post_rule(logged_in_client)
+
+    response = _post_rule(logged_in_client, name="重複", target_state="ON", start="10:30", end="11:30")
+
+    assert response.status_code == 422 and "重なります" in response.text
+
+
+def test_custom_rule_warns_when_overlapping_modified_schedule(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)  # 明日 17:00〜18:00 注意報
+    advisory = _tomorrow_schedules(session)[0]
+    logged_in_client.post(f"/schedule/{advisory.id}/toggle", data={"enabled": "true", "csrf_token": csrf_token(logged_in_client)})
+
+    response = _post_rule(logged_in_client, target_state="ON", start="17:00", end="17:30")
+
+    assert response.status_code == 200
+    assert "展開しませんでした" in response.text
+
+
+def test_toggle_update_and_delete_custom_rule(logged_in_client: TestClient, session) -> None:
+    _post_rule(logged_in_client)
+    rule = session.scalars(select(ScheduleRule)).one()
+
+    response = logged_in_client.post(
+        f"/schedule/rules/{rule.id}/toggle",
+        data={"enabled": "false", "day": "tomorrow", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=rule_toggled"
+    assert _tomorrow_schedules(session) == []
+
+    response = _post_rule(logged_in_client, f"/schedule/rules/{rule.id}", start="12:00", end="13:00")
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=rule_updated"
+    session.expire_all()
+    assert session.get(ScheduleRule, rule.id).start_time == time(12)
+
+    response = logged_in_client.post(
+        f"/schedule/rules/{rule.id}/delete",
+        data={"day": "tomorrow", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=rule_deleted"
+    session.expire_all()
+    assert session.scalars(select(ScheduleRule)).all() == []
+
+
+def test_custom_rule_requires_csrf(logged_in_client: TestClient) -> None:
+    response = logged_in_client.post("/schedule/rules", data={"name": "x", "start": "10:00", "end": "11:00"})
+
+    assert response.status_code == 403
 
 
 # --- Dry Run（Phase 5） ---

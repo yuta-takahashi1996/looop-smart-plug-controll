@@ -1,11 +1,12 @@
 from datetime import date, datetime, time, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.models.schedule import ControlSchedule, EnabledBy
-from app.models.settings import ControlSettings, save_control_settings
+from app.models.schedule import ControlSchedule, EnabledBy, RepeatType, ScheduleRule, ScheduleSource
+from app.models.settings import ControlSettings, load_control_settings, save_control_settings
 from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.services import forecast as forecast_service
 from app.services import optimizer
@@ -353,3 +354,174 @@ def test_enable_rejected_when_daily_limit_exceeded(session: Session) -> None:
 def test_started_schedule_cannot_be_changed(session: Session, two_schedules: list[ControlSchedule]) -> None:
     with pytest.raises(ScheduleChangeError, match="開始済み"):
         optimizer.update_schedule(session, get_settings(), two_schedules[0], enabled=True, now=_at(10, 15))
+
+
+# --- 任意スケジュール（docs/07 §7.9） ---
+
+C = ScheduleSource.CUSTOM
+
+
+def _rule(session: Session, name: str = "任意", *, state: str = "OFF", start=(10, 0), end=(11, 0), **fields) -> ScheduleRule:
+    """ルールを保存して当日・翌日（DAY）分を展開する。"""
+    rule = ScheduleRule(
+        name=name,
+        target_state=state,
+        repeat_type=fields.pop("repeat_type", RepeatType.DAILY),
+        start_time=time(*start),
+        end_time=time(*end),
+        enabled=True,
+        **fields,
+    )
+    optimizer.save_rule(session, get_settings(), rule, now=BEFORE_DAY)
+    return rule
+
+
+def _spans(session: Session) -> list[tuple[time, time, str, str, bool]]:
+    session.expire_all()
+    return [
+        (s.start_at.astimezone(JST).time(), s.end_at.astimezone(JST).time(), s.source_level.value, s.target_state, s.enabled)
+        for s in optimizer.schedules_for(session, DAY)
+    ]
+
+
+def test_custom_off_is_expanded_without_forecast(session: Session) -> None:
+    _rule(session, "昼", start=(12, 0), end=(13, 0))
+
+    assert _spans(session) == [(time(12), time(13), "CUSTOM", "OFF", True)]
+    schedule = optimizer.schedules_for(session, DAY)[0]
+    assert "任意スケジュール「昼」" in schedule.reason and "未算出" in schedule.reason
+
+
+def test_custom_once_and_weekly_apply_only_to_their_days(session: Session) -> None:
+    _rule(session, "別の日", repeat_type=RepeatType.ONCE, target_date=DAY + timedelta(days=1))
+    _rule(session, "曜日違い", repeat_type=RepeatType.WEEKLY, weekdays=str((DAY.weekday() + 1) % 7), start=(12, 0), end=(13, 0))
+    _rule(session, "対象", repeat_type=RepeatType.WEEKLY, weekdays=str(DAY.weekday()), start=(14, 0), end=(15, 0))
+
+    assert _spans(session) == [(time(14), time(15), "CUSTOM", "OFF", True)]
+
+
+def test_forecast_schedules_avoid_custom_on(session: Session) -> None:
+    _store(session, _levels({range(38, 40): W}))  # 19:00〜20:00 警報
+    _rule(session, "在宅", state="ON", start=(19, 0), end=(19, 30))
+
+    # 警報も任意 ON の時間帯には作らない（ON の前後には最低切り替え間隔を空けない）
+    assert _spans(session) == [
+        (time(19), time(19, 30), "CUSTOM", "ON", True),
+        (time(19, 30), time(20), "WARNING", "OFF", True),
+    ]
+
+
+def test_custom_off_is_counted_first_in_daily_limit(session: Session) -> None:
+    _store(session, _levels({range(28, 32): A}), [20.0 + i for i in range(48)])  # 14:00〜16:00 注意報
+    _rule(session, "午前", start=(10, 0), end=(12, 0))  # 120分。1日の上限 180分の残りは 60分
+
+    assert _spans(session) == [
+        (time(10), time(12), "CUSTOM", "OFF", True),
+        (time(15), time(16), "ADVISORY", "OFF", False),  # 単価の高い方の 60分に短縮
+    ]
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        (dict(start=(8, 0), end=(9, 0)), "運用時間"),
+        (dict(start=(10, 0), end=(12, 30)), "最大連続OFF時間"),
+        (dict(start=(11, 0), end=(10, 0)), "開始時刻を終了時刻より前"),
+        (dict(start=(10, 15), end=(11, 0)), "30分単位"),
+        (dict(repeat_type=RepeatType.ONCE, target_date=date(2030, 1, 14), start=(10, 0), end=(11, 0)), "現在より後"),
+        (dict(repeat_type=RepeatType.WEEKLY, weekdays=""), "曜日を1つ以上"),
+        (dict(start=(10, 30), end=(11, 30)), "重なります"),
+        (dict(start=(11, 0), end=(11, 30), state="OFF"), None),  # 連続（間隔0）は許可
+        (dict(start=(15, 0), end=(17, 0)), "1日の最大OFF時間"),
+    ],
+)
+def test_custom_rule_validation(session: Session, fields: dict, message: str | None) -> None:
+    _rule(session, "既存1", start=(10, 0), end=(11, 0))
+    _rule(session, "既存2", start=(12, 0), end=(13, 0))
+    state = fields.pop("state", "OFF")
+    rule = ScheduleRule(
+        name="新規",
+        target_state=state,
+        repeat_type=fields.pop("repeat_type", RepeatType.DAILY),
+        start_time=time(*fields.pop("start", (14, 0))),
+        end_time=time(*fields.pop("end", (15, 0))),
+        enabled=True,
+        **fields,
+    )
+
+    errors = optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY)
+
+    if message is None:
+        assert errors == []
+    else:
+        assert any(message in e for e in errors), errors
+
+
+def test_custom_on_is_not_limited(session: Session) -> None:
+    rule = ScheduleRule(
+        name="終日", target_state="ON", repeat_type=RepeatType.DAILY, start_time=time(0), end_time=time(0), enabled=True
+    )
+
+    assert optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY) == []
+
+
+def test_custom_rule_change_keeps_manually_toggled_instance(session: Session) -> None:
+    rule = _rule(session, "昼", start=(12, 0), end=(13, 0))
+    instance = optimizer.schedules_for(session, DAY)[0]
+    optimizer.update_schedule(session, get_settings(), instance, enabled=False, now=BEFORE_DAY)
+
+    rule.start_time, rule.end_time = time(14), time(15)
+    optimizer.save_rule(session, get_settings(), rule, now=BEFORE_DAY)
+
+    assert _spans(session) == [(time(12), time(13), "CUSTOM", "OFF", False)]
+
+
+def test_custom_instance_time_cannot_be_changed(session: Session) -> None:
+    _rule(session, "昼", start=(12, 0), end=(13, 0))
+    instance = optimizer.schedules_for(session, DAY)[0]
+
+    with pytest.raises(ScheduleChangeError, match="ルールで変更"):
+        optimizer.update_schedule(session, get_settings(), instance, start_at=_at(13), end_at=_at(14), now=BEFORE_DAY)
+
+
+def test_delete_rule_removes_pending_and_keeps_started(session: Session) -> None:
+    rule = _rule(session, "昼", start=(12, 0), end=(13, 0))
+    today_instance = next(s for s in optimizer.schedules_for(session, DAY))
+    optimizer.update_schedule(session, get_settings(), today_instance, enabled=False, now=BEFORE_DAY)
+
+    optimizer.delete_rule(session, get_settings(), rule, now=_at(12, 15))
+
+    session.expire_all()
+    remaining = optimizer.schedules_for(session, DAY)
+    assert [(s.rule_id, s.start_at.astimezone(JST).time()) for s in remaining] == [(None, time(12))]  # 開始済みは残す
+    assert optimizer.schedules_for(session, DAY + timedelta(days=1)) == []  # 翌日の未開始分は削除
+    assert session.scalars(select(ScheduleRule)).all() == []
+
+
+def test_rule_conflicting_with_modified_schedule_is_reported(session: Session) -> None:
+    _store(session, _levels({range(20, 22): A}))  # 10:00〜11:00 注意報
+    advisory = optimizer.regenerate(session, get_settings(), DAY, now=BEFORE_DAY)[0]
+    optimizer.update_schedule(session, get_settings(), advisory, enabled=True, now=BEFORE_DAY)
+
+    rule = ScheduleRule(
+        name="重複", target_state="ON", repeat_type=RepeatType.DAILY, start_time=time(10, 30), end_time=time(11, 30), enabled=True
+    )
+    messages = optimizer.save_rule(session, get_settings(), rule, now=BEFORE_DAY)
+
+    assert any("01/15 10:30〜11:30" in m and "10:00〜11:00" in m for m in messages)
+    assert [(s.source_level, s.target_state) for s in optimizer.schedules_for(session, DAY)] == [(A, "OFF")]
+
+
+def test_custom_off_gap_validation(session: Session) -> None:
+    control = load_control_settings(session, get_settings()).model_copy(update={"min_switch_interval_minutes": 60})
+    save_control_settings(session, control)
+    _rule(session, "既存", start=(12, 0), end=(13, 0))
+    rule = ScheduleRule(
+        name="近い", target_state="OFF", repeat_type=RepeatType.DAILY, start_time=time(13, 30), end_time=time(14), enabled=True
+    )
+
+    errors = optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY)
+
+    assert any("最低切り替え間隔（60分）" in e for e in errors)
+    rule.target_state = "ON"  # ON との間隔は問わない
+    assert optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY) == []

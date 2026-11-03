@@ -2,6 +2,7 @@
 
 Web UI と同一プロセスで 1 つだけ起動する（二重起動防止）。現時点のジョブ：
 - 料金予報の取得：起動時、毎日 16:15（翌日分）、未取得の間は 15 分ごとに再取得。取得後に制御スケジュールを再生成する
+  （取得に失敗しても、スケジュールが未生成の日は任意スケジュールを展開する。docs/07 §7.9）
 - プラグ状態の確認：5 分ごと（SwitchBot API の上限は 1 日 10,000 回）
 - 単価に関わる Looop のお知らせの確認：起動時と毎日 1 回
 - 制御サイクル（有効なスケジュールの実行。Dry Run では操作を記録するだけ）：毎分
@@ -11,7 +12,7 @@ Web UI と同一プロセスで 1 つだけ起動する（二重起動防止）�
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -60,9 +61,23 @@ class Jobs:
                 )
                 optimizer.regenerate_days(session, self._settings, saved)
             except ForecastFetchError:
-                pass  # イベントは fetch_and_store で記録済み。次回の再取得ジョブで再試行する
+                # イベントは fetch_and_store で記録済み。次回の再取得ジョブで再試行する
+                self._expand_pending(session)
             except Exception:
                 logger.exception("unexpected error while fetching forecast")
+
+    def _target_days(self) -> list[date]:
+        now = datetime.now(self._tz)
+        return [now.date()] + ([now.date() + timedelta(days=1)] if now.time() >= TOMORROW_FETCH_TIME else [])
+
+    def _expand_pending(self, session: Session) -> None:
+        """スケジュールが未生成の日に任意スケジュールを展開する（予報を取得できない間も実行するため）。"""
+        try:
+            pending = [d for d in self._target_days() if not optimizer.schedules_for(session, d)]
+            if pending:
+                optimizer.regenerate_days(session, self._settings, pending)
+        except Exception:
+            logger.exception("unexpected error while expanding custom schedules")
 
     def ensure_forecast(self) -> None:
         """当日分（16:15 以降は翌日分も）が揃っていなければ取得する。"""
@@ -79,10 +94,7 @@ class Jobs:
             return
         # 予報はあるがスケジュールが未生成の日（初回起動時など）は生成する
         with self._session_factory() as session:
-            days = [now.date()] + ([now.date() + timedelta(days=1)] if now.time() >= TOMORROW_FETCH_TIME else [])
-            pending = [d for d in days if not optimizer.schedules_for(session, d)]
-            if pending:
-                optimizer.regenerate_days(session, self._settings, pending)
+            self._expand_pending(session)
 
     def refresh_plug_status(self) -> None:
         try:
