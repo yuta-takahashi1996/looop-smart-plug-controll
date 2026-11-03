@@ -10,12 +10,12 @@ Phase 6（実制御）まで実装済み。Looopでんき予報から北海道�
 
 ```bash
 cp .env.example .env        # 初期値は DRY_RUN=true
-uv run python scripts/hash_password.py   # 出力を .env の WEB_PASSWORD_HASH に設定
+uv run python scripts/hash_password.py   # 出力された WEB_PASSWORD_HASH='...' の行を .env に貼り付け
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # 出力を .env の SESSION_SECRET に設定
 docker compose up -d --build
 ```
 
-Web UI へのログインには `WEB_PASSWORD_HASH` と `SESSION_SECRET` の設定が必要（ユーザー名は `WEB_USERNAME`、既定 `admin`）。アクセスできる接続元は `ALLOWED_NETWORKS` で制限する。
+Web UI へのログインには `WEB_PASSWORD_HASH` と `SESSION_SECRET` の設定が必要（ユーザー名は `WEB_USERNAME`、既定 `admin`）。`WEB_PASSWORD_HASH` は `$` を含むため、値をシングルクォートで囲む（囲まないと Docker Compose が `$` を変数として展開し、ログインできなくなる）。アクセスできる接続元は `ALLOWED_NETWORKS` で制限する。
 
 http://127.0.0.1:8080 にアクセスする。
 
