@@ -68,6 +68,8 @@ class Settings(BaseSettings):
     jackery_device_id: str = ""
 
     # Schedule（運用時間・OFF時間の制限、推定節約額の算出に使う値）
+    # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
+    auto_enable: bool = False
     round_trip_efficiency: float = Field(default=0.85, gt=0, le=1)
     max_continuous_off_minutes: int = Field(default=120, ge=0)
     max_daily_off_minutes: int = Field(default=180, ge=0)

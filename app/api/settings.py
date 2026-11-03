@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,6 +14,7 @@ from app.models.forecast import AdjustmentCategory, PriceAdjustment
 from app.models.settings import ControlSettings, load_control_settings, save_control_settings
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
+from app.services import optimizer
 from app.templating import templates
 
 router = APIRouter()
@@ -34,6 +35,7 @@ _LABELS = {key: label for key, label, _, _ in FIELDS}
 def _to_form_values(data: ControlSettings) -> dict[str, str]:
     """画面表示用の文字列へ変換する（往復効率は％で表示する）。"""
     return {
+        "auto_enable": "on" if data.auto_enable else "",
         "operation_start": data.operation_start.strftime("%H:%M"),
         "operation_end": data.operation_end.strftime("%H:%M"),
         "round_trip_efficiency": f"{data.round_trip_efficiency * 100:g}",
@@ -46,6 +48,7 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
 
 def _parse_form(form: dict[str, str]) -> ControlSettings:
     values: dict[str, Any] = {key: form.get(key, "").strip() for key in _LABELS}
+    values["auto_enable"] = form.get("auto_enable") == "on"  # チェックボックスは未チェックだと送信されない
     try:
         values["round_trip_efficiency"] = float(values["round_trip_efficiency"]) / 100
     except ValueError:
@@ -121,11 +124,14 @@ async def update_settings(request: Request, session: Session = Depends(get_sessi
         return _render(
             request,
             session,
-            {key: form.get(key, "") for key in _LABELS},
+            {key: form.get(key, "") for key in _LABELS} | {"auto_enable": form.get("auto_enable", "")},
             errors=_error_messages(exc),
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
     save_control_settings(session, data)
+    # 変更した条件を、手動で変更していない未開始のスケジュールへ反映する
+    today = datetime.now(ZoneInfo(get_settings().tz)).date()
+    optimizer.regenerate_days(session, get_settings(), [today, today + timedelta(days=1)])
     return _render(request, session, _to_form_values(data), saved=True)
 
 

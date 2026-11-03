@@ -27,6 +27,7 @@ class SystemSetting(Base):
 class ControlSettings(BaseModel):
     """Web UI から変更できる制御条件。制約は app/config.py の Settings に揃える。"""
 
+    auto_enable: bool
     operation_start: time
     operation_end: time
     round_trip_efficiency: float = Field(gt=0, le=1)
