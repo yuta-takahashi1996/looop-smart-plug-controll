@@ -20,6 +20,14 @@ os.environ["WEB_PASSWORD_HASH"] = (
 )
 os.environ["SESSION_SECRET"] = "test-session-secret"
 os.environ["ALLOWED_NETWORKS"] = "127.0.0.1/32"
+# 制御条件はテストの前提（.env.example の初期値）に固定する（手元の .env の値に左右されないように）
+os.environ["OPERATION_START"] = "09:00"
+os.environ["OPERATION_END"] = "18:00"
+os.environ["AUTO_ENABLE"] = "false"
+os.environ["BATTERY_MIN_PERCENT"] = "5"
+os.environ["MAX_CONTINUOUS_OFF_MINUTES"] = "120"
+os.environ["MAX_DAILY_OFF_MINUTES"] = "180"
+os.environ["MIN_SWITCH_INTERVAL_MINUTES"] = "30"
 
 from datetime import date, datetime, timedelta  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
