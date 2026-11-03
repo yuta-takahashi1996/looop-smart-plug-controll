@@ -59,7 +59,7 @@ LOG_LEVEL=INFO
 | 変数 | 説明 |
 |---|---|
 | WEB_USERNAME | Web UI の管理ユーザー名 |
-| WEB_PASSWORD_HASH | ログインパスワードの scrypt ハッシュ。`uv run python scripts/hash_password.py` で生成する |
+| WEB_PASSWORD_HASH | ログインパスワードの scrypt ハッシュ。`uv run python scripts/hash_password.py` で生成する。値は `$` を含むため、シングルクォートで囲む（`WEB_PASSWORD_HASH='scrypt$...'`） |
 | SESSION_SECRET | セッションCookieの署名鍵（十分に長いランダム文字列） |
 | ALLOWED_NETWORKS | アクセスを許可する接続元（カンマ区切りのCIDR）。範囲外からの接続は 403 とする |
 
@@ -80,3 +80,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 ## Jackery
 
 `JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。`JACKERY_DEVICE_ID` は `uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。
+
+## `$` を含む値
+
+Docker Compose は `env_file` の値に含まれる `$` を変数として展開する。`$` を含む値（`WEB_PASSWORD_HASH` など）はシングルクォートで囲む。シングルクォートで囲んだ値は、Docker Compose とアプリ（python-dotenv）のどちらでも文字どおりに読まれる。

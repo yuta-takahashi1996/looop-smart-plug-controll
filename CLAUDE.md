@@ -26,7 +26,7 @@ scripts/tailwind.sh --watch              # テンプレート編集中の監視�
 uv run alembic upgrade head              # マイグレーション適用（DATABASE_URL、既定は data/app.db）
 uv run alembic revision --autogenerate -m "..."  # マイグレーション作成
 uv run uvicorn app.main:app --reload --port 8080 # ローカル起動（事前に tailwind.sh で CSS 生成）
-uv run python scripts/hash_password.py   # WEB_PASSWORD_HASH の生成（ログインに必須。端末から実行）
+uv run python scripts/hash_password.py   # WEB_PASSWORD_HASH の生成（ログインに必須。端末から実行。出力は '...' 付きでそのまま .env へ）
 uv run python scripts/switchbot_check.py devices|status          # SwitchBot の確認（読み取りのみ）
 uv run python scripts/switchbot_check.py verify-onoff --confirm  # 実機の ON/OFF 確認（プラグが実際に切り替わる）
 uv run python scripts/jackery_check.py [devices|status|raw]      # ポータブル電源の残量確認（読み取りのみ）
@@ -44,7 +44,7 @@ docker compose down
 - コンテナは起動時に `alembic upgrade head` を実行してから uvicorn を起動する。
 - 共有の `Jinja2Templates` は `app/templating.py` にある。HTMX の部分テンプレートと Jinja マクロ（`ui.html`）は `app/templates/components/` に置く。
 - 画面ルーターは `app/main.py` で `require_login` 依存付きで登録される。POST エンドポイントには `Depends(verify_csrf)` を付ける（HTMX は `<body hx-headers>` で `X-CSRF-Token` を自動送信、通常フォームは hidden の `csrf_token`）。
-- ログインには `WEB_PASSWORD_HASH` と `SESSION_SECRET` が必要（未設定時はログイン不可）。接続元は `ALLOWED_NETWORKS` で制限される。テストでは `tests/conftest.py` の `logged_in_client` fixture を使う。
+- ログインには `WEB_PASSWORD_HASH` と `SESSION_SECRET` が必要（未設定時はログイン不可）。`.env` の `$` を含む値はシングルクォートで囲む（Docker Compose の変数展開を防ぐため）。接続元は `ALLOWED_NETWORKS` で制限される。テストでは `tests/conftest.py` の `logged_in_client` fixture を使う。
 
 ## Pull Request 作成規約
 

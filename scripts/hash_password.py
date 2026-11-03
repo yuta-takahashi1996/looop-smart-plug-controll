@@ -3,7 +3,8 @@
     uv run python scripts/hash_password.py          # 対話入力（端末から実行する）
     uv run python scripts/hash_password.py < file   # 標準入力の1行目を使う
 
-出力された値を .env の WEB_PASSWORD_HASH に設定する。
+出力された行（WEB_PASSWORD_HASH='...'）をそのまま .env に貼り付ける。ハッシュは $ を含むため、
+シングルクォートで囲んで出力する（囲まないと Docker Compose が $ を変数として展開し、値が壊れる）。
 """
 
 import getpass
@@ -25,7 +26,7 @@ def main() -> None:
         password = sys.stdin.readline().rstrip("\r\n")
     if not password:
         sys.exit("パスワードが空です")
-    print(hash_password(password))
+    print(f"WEB_PASSWORD_HASH='{hash_password(password)}'")
 
 
 if __name__ == "__main__":
