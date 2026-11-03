@@ -2,9 +2,11 @@ import base64
 import hashlib
 import hmac
 import json
+from datetime import date, datetime, time, timedelta
 
 import httpx
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.clients import switchbot
@@ -15,9 +17,15 @@ from app.clients.switchbot import (
     SwitchBotNotConfiguredError,
     build_auth_headers,
 )
+from app.config import get_settings
+from app.models.schedule import ControlLog, ControlResult, ControlSchedule, ControlSource, PlugState, ScheduleStatus
 from app.models.settings import EventCategory, unresolved_events
+from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.repositories.database import SessionLocal
-from app.services.controller import PlugMonitor
+from app.services import forecast as forecast_service
+from app.services import optimizer
+from app.services.controller import ControlService, PlugMonitor
+from tests.conftest import JST
 
 # --- SwitchBot クライアント ---
 
@@ -198,3 +206,165 @@ def test_monitor_without_credentials_does_not_call_api(session: Session) -> None
     assert snapshot.status is None
     assert "未設定" in snapshot.error
     assert unresolved_events(session) == []
+
+
+# --- Control Service（Dry Run でのスケジュール実行） ---
+
+DAY = date(2030, 1, 15)
+N, A, W = ForecastLevel.NORMAL, ForecastLevel.ADVISORY, ForecastLevel.WARNING
+
+
+def _at(hour: int, minute: int = 0, second: int = 5) -> datetime:
+    return datetime.combine(DAY, time(hour, minute, second), tzinfo=JST)
+
+
+def _prepare(session: Session, spec: dict[range, ForecastLevel], enable: bool = True) -> list[ControlSchedule]:
+    levels = [N] * 48
+    for r, level in spec.items():
+        for i in r:
+            levels[i] = level
+    prices = [20.0] * 48
+    result = FetchResult("hokkaido", datetime.combine(DAY, time(6), tzinfo=JST), [DayPrices(DAY, prices, levels)], "test")
+    forecast_service.save_result(session, result, JST)
+    before = datetime.combine(DAY, time(), tzinfo=JST) - timedelta(hours=1)
+    schedules = optimizer.regenerate(session, get_settings(), DAY, now=before)
+    if enable:
+        for s in schedules:
+            if not s.enabled:
+                optimizer.update_schedule(session, get_settings(), s, enabled=True, now=before)
+    return optimizer.schedules_for(session, DAY)
+
+
+def _logs(session: Session) -> list[tuple[str, str | None, str, str]]:
+    session.expire_all()
+    return [
+        (log.source.value, log.previous_state.value if log.previous_state else None, log.requested_state.value, log.result.value)
+        for log in session.scalars(select(ControlLog).order_by(ControlLog.id))
+    ]
+
+
+def _schedules(session: Session) -> list[ControlSchedule]:
+    session.expire_all()
+    return optimizer.schedules_for(session, DAY)
+
+
+@pytest.fixture
+def control() -> ControlService:
+    return ControlService(get_settings(), SessionLocal)
+
+
+def test_initializes_to_on_once(session: Session, control: ControlService) -> None:
+    control.run_cycle(_at(8))
+    control.run_cycle(_at(8, 1))
+
+    assert _logs(session) == [("SAFETY", None, "ON", "DRY_RUN")]
+    assert control.mode == "GRID"
+
+
+def test_runs_enabled_schedule_without_sending_commands(session: Session, control: ControlService) -> None:
+    _prepare(session, {range(34, 36): A})  # 17:00〜18:00 の注意報を有効にする
+
+    for t in [_at(16, 59), _at(17, 0), _at(17, 30), _at(17, 59), _at(18, 0)]:
+        control.run_cycle(t)
+
+    assert _logs(session) == [
+        ("SAFETY", None, "ON", "DRY_RUN"),
+        ("AUTO", "ON", "OFF", "DRY_RUN"),
+        ("AUTO", "OFF", "ON", "DRY_RUN"),
+    ]
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.DONE
+    assert s.executed_start_at == _at(17, 0)
+    assert s.executed_end_at == _at(18, 0, 0)
+    # 17:00:05〜18:00 の実行分の推定節約額（計画値とほぼ同じ）
+    assert s.executed_saving == pytest.approx(s.estimated_saving, abs=0.1)
+    session.expire_all()
+    off_log = session.scalars(select(ControlLog).where(ControlLog.requested_state == PlugState.OFF)).one()
+    assert off_log.schedule_id == s.id and off_log.dry_run and off_log.actual_state is None
+
+
+def test_disabled_schedule_is_not_executed(session: Session, control: ControlService) -> None:
+    _prepare(session, {range(34, 36): A}, enable=False)
+
+    for t in [_at(17), _at(17, 30), _at(18)]:
+        control.run_cycle(t)
+
+    assert _logs(session) == [("SAFETY", None, "ON", "DRY_RUN")]
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.SKIPPED and "無効" in s.status_reason
+
+
+def test_warning_outside_operation_hours_is_not_started_without_battery(session: Session, control: ControlService) -> None:
+    _prepare(session, {range(38, 40): W})  # 19:00〜20:00（運用時間外）
+
+    control.run_cycle(_at(19))
+
+    assert _logs(session) == [("SAFETY", None, "ON", "DRY_RUN")]
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.ABORTED and "運用時間外" in s.status_reason
+
+
+def test_warning_is_stopped_at_continuous_limit_without_battery(session: Session, control: ControlService) -> None:
+    _prepare(session, {range(20, 26): W})  # 10:00〜13:00 の警報（生成時は切り詰めない）
+
+    for t in [_at(10), _at(11), _at(11, 59), _at(12, 0, 5), _at(12, 30)]:
+        control.run_cycle(t)
+
+    assert _logs(session) == [
+        ("SAFETY", None, "ON", "DRY_RUN"),
+        ("AUTO", "ON", "OFF", "DRY_RUN"),
+        ("SAFETY", "OFF", "ON", "DRY_RUN"),
+    ]
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.ABORTED and "最大連続OFF時間" in s.status_reason
+    assert s.executed_end_at == _at(12, 0, 5)
+
+
+def test_adjacent_schedules_do_not_switch_between(session: Session, control: ControlService) -> None:
+    _prepare(session, {range(32, 34): A, range(34, 36): W})  # 16:00〜17:00 注意報、17:00〜18:00 警報
+
+    for t in [_at(16), _at(17), _at(18)]:
+        control.run_cycle(t)
+
+    assert [log[2] for log in _logs(session)] == ["ON", "OFF", "ON"]
+    assert [s.status for s in _schedules(session)] == [ScheduleStatus.DONE, ScheduleStatus.DONE]
+
+
+def test_schedule_missed_while_stopped_is_skipped(session: Session, control: ControlService) -> None:
+    _prepare(session, {range(20, 22): A})
+
+    control.run_cycle(_at(12))
+
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.SKIPPED and "停止" in s.status_reason
+    assert [log[2] for log in _logs(session)] == ["ON"]
+
+
+def test_shutdown_returns_to_on(session: Session, control: ControlService) -> None:
+    _prepare(session, {range(20, 22): A})
+    control.run_cycle(_at(10))
+
+    control.shutdown(_at(10, 15))
+
+    assert _logs(session)[-1] == ("SAFETY", "OFF", "ON", "DRY_RUN")
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.ABORTED and s.status_reason == "システムの終了"
+    assert s.executed_end_at == _at(10, 15)
+
+
+def test_control_logs_are_dry_run(session: Session, control: ControlService) -> None:
+    control.initialize(_at(8))
+
+    log = session.scalars(select(ControlLog)).one()
+    assert (log.source, log.result, log.dry_run) == (ControlSource.SAFETY, ControlResult.DRY_RUN, True)
+
+
+def test_initialize_failure_does_not_raise(session: Session) -> None:
+    def broken_session() -> Session:
+        raise RuntimeError("database is not ready")
+
+    control = ControlService(get_settings(), broken_session)
+
+    control.initialize(_at(8))  # 例外を外へ出さない
+
+    assert control.mode == "SAFE"

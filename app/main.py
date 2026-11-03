@@ -25,7 +25,7 @@ from app.config import get_settings
 from app.models.forecast import ADJUSTMENT_CATEGORY_LABELS
 from app.providers.looop import LooopForecastProvider
 from app.repositories.database import SessionLocal, get_session
-from app.services.controller import PlugMonitor
+from app.services.controller import ControlService, PlugMonitor
 from app.services.scheduler import Jobs, create_scheduler
 from app.templating import templates
 
@@ -58,14 +58,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not app.state.plug_monitor.configured:
         logger.warning("SwitchBot の認証情報が未設定のため、プラグ状態を確認できません")
 
+    app.state.control = ControlService(settings, SessionLocal)
+
     scheduler = None
     if settings.app_env != "test":
-        jobs = Jobs(settings, app.state.forecast_provider, app.state.plug_monitor, SessionLocal)
+        app.state.control.initialize()
+        jobs = Jobs(settings, app.state.forecast_provider, app.state.plug_monitor, SessionLocal, app.state.control)
         scheduler = create_scheduler(settings, jobs)
         scheduler.start()
     yield
     if scheduler is not None:
-        scheduler.shutdown(wait=False)
+        scheduler.shutdown(wait=True)
+        app.state.control.shutdown()
     logger.info("shutting down")
 
 

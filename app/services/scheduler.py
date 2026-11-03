@@ -4,6 +4,7 @@ Web UI と同一プロセスで 1 つだけ起動する（二重起動防止）�
 - 料金予報の取得：起動時、毎日 16:15（翌日分）、未取得の間は 15 分ごとに再取得。取得後に制御スケジュールを再生成する
 - プラグ状態の確認：5 分ごと（SwitchBot API の上限は 1 日 10,000 回）
 - 単価に関わる Looop のお知らせの確認：起動時と毎日 1 回
+- 制御サイクル（有効なスケジュールの実行。Dry Run では操作を記録するだけ）：毎分
 """
 
 import logging
@@ -18,7 +19,7 @@ from app.config import Settings
 from app.providers.base import ForecastFetchError, ForecastProvider
 from app.services import forecast as forecast_service
 from app.services import optimizer
-from app.services.controller import PlugMonitor
+from app.services.controller import ControlService, PlugMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,12 @@ class Jobs:
         provider: ForecastProvider,
         monitor: PlugMonitor,
         session_factory: Callable[[], Session],
+        control: ControlService | None = None,
     ) -> None:
         self._settings = settings
         self._provider = provider
         self._monitor = monitor
+        self._control = control
         self._session_factory = session_factory
         self._tz = ZoneInfo(settings.tz)
 
@@ -84,6 +87,14 @@ class Jobs:
             self._monitor.refresh()
         except Exception:
             logger.exception("unexpected error while checking plug status")
+
+    def run_control_cycle(self) -> None:
+        if self._control is None:
+            return
+        try:
+            self._control.run_cycle()
+        except Exception:
+            logger.exception("unexpected error in control cycle")
 
     def check_price_notices(self) -> None:
         with self._session_factory() as session:
@@ -136,4 +147,6 @@ def create_scheduler(settings: Settings, jobs: Jobs) -> BackgroundScheduler:
     scheduler.add_job(
         jobs.check_price_notices, "date", run_date=now + timedelta(seconds=30), id="check_price_notices_on_startup"
     )
+    # スケジュールの境界（:00 / :30）の直後に実行されるよう、毎分 5 秒に実行する
+    scheduler.add_job(jobs.run_control_cycle, "cron", second=5, id="run_control_cycle")
     return scheduler
