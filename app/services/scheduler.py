@@ -5,6 +5,8 @@ Web UI と同一プロセスで 1 つだけ起動する（二重起動防止）�
 - プラグ状態の確認：5 分ごと（SwitchBot API の上限は 1 日 10,000 回）
 - 単価に関わる Looop のお知らせの確認：起動時と毎日 1 回
 - 制御サイクル（有効なスケジュールの実行。Dry Run では操作を記録するだけ）：毎分
+- 日次集計（前日分）：毎日 0:05、起動時（直近の未集計分も）
+- バックアップと古いデータの削除：毎日 3:30
 """
 
 import logging
@@ -18,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.providers.base import ForecastFetchError, ForecastProvider
 from app.services import forecast as forecast_service
-from app.services import optimizer
+from app.services import maintenance, optimizer
 from app.services.controller import ControlService, PlugMonitor
 
 logger = logging.getLogger(__name__)
@@ -96,6 +98,27 @@ class Jobs:
         except Exception:
             logger.exception("unexpected error in control cycle")
 
+    def summarize_daily(self) -> None:
+        with self._session_factory() as session:
+            try:
+                days = maintenance.summarize_pending(session, self._settings, datetime.now(self._tz).date())
+                if days:
+                    logger.info("daily summaries updated: %s", ", ".join(map(str, days)))
+            except Exception:
+                logger.exception("unexpected error while summarizing daily results")
+
+    def run_maintenance(self) -> None:
+        now = datetime.now(self._tz)
+        try:
+            maintenance.backup_database(self._settings, now.date())
+        except Exception:
+            logger.exception("database backup failed")
+        with self._session_factory() as session:
+            try:
+                maintenance.cleanup_old_data(session, self._settings, now)
+            except Exception:
+                logger.exception("old data cleanup failed")
+
     def check_price_notices(self) -> None:
         with self._session_factory() as session:
             try:
@@ -149,4 +172,7 @@ def create_scheduler(settings: Settings, jobs: Jobs) -> BackgroundScheduler:
     )
     # スケジュールの境界（:00 / :30）の直後に実行されるよう、毎分 5 秒に実行する
     scheduler.add_job(jobs.run_control_cycle, "cron", second=5, id="run_control_cycle")
+    scheduler.add_job(jobs.summarize_daily, "cron", hour=0, minute=5, id="summarize_daily")
+    scheduler.add_job(jobs.summarize_daily, "date", run_date=now + timedelta(seconds=45), id="summarize_daily_on_startup")
+    scheduler.add_job(jobs.run_maintenance, "cron", hour=3, minute=30, id="run_maintenance")
     return scheduler

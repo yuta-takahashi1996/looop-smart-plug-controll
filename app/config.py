@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     min_switch_interval_minutes: int = Field(default=30, ge=0)
     estimated_average_power_w: float = Field(default=150, ge=0)
 
+    # Maintenance（docs/10 §10.8）
+    backup_generations: int = Field(default=14, ge=0)  # data/backups/ に残す日次バックアップの数（0 で無効）
+    data_retention_days: int = Field(default=400, ge=30)  # 制御履歴・スケジュール・料金予報の保持期間
+
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 

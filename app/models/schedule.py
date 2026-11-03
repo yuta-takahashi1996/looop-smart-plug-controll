@@ -69,6 +69,10 @@ class ControlSchedule(Base):
     executed_end_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     executed_saving: Mapped[float | None] = mapped_column(Float, nullable=True)
     status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 中断・スキップの理由
+    # 実測値（制御パラメータ調整の材料）。ポータブル電源の残量を取得できた場合のみ
+    battery_start_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    battery_end_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    measured_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)  # OFF 中の平均消費電力
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
@@ -86,3 +90,22 @@ class ControlLog(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     dry_run: Mapped[bool] = mapped_column(Boolean)
     schedule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # スケジュールによる操作の場合
+
+
+class DailySummary(Base):
+    """日次集計（docs/10-database.md §10.7）。前日分を毎日 0:05 に集計する（当日分は画面で都度集計）。"""
+
+    __tablename__ = "daily_summaries"
+
+    summary_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    off_minutes: Mapped[int] = mapped_column(Integer)  # 実行した OFF 時間の合計
+    switch_count: Mapped[int] = mapped_column(Integer)  # 状態が変わった操作の回数
+    schedules_done: Mapped[int] = mapped_column(Integer)
+    schedules_aborted: Mapped[int] = mapped_column(Integer)
+    schedules_skipped: Mapped[int] = mapped_column(Integer)  # 無効・停止中などで実行しなかった
+    estimated_saving: Mapped[float] = mapped_column(Float)  # 実行分の推定節約額の合計（円）
+    battery_used_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 実測できた OFF の残量減少の合計
+    measured_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)  # 実測できた OFF の平均消費電力
+    failed_operations: Mapped[int] = mapped_column(Integer)  # 失敗・未確認の操作の件数
+    dry_run: Mapped[bool] = mapped_column(Boolean)  # Dry Run の記録を含むか
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
