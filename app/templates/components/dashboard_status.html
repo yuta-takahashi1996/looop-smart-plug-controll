@@ -1,4 +1,4 @@
-{% from "components/ui.html" import card, stat, state_badge, level_badge %}
+{% from "components/ui.html" import card, stat, state_badge, level_badge, refresh_button with context %}
 {%- set p = prices -%}
 {%- set c = control -%}
 <div class="grid gap-4 lg:grid-cols-3">
@@ -45,32 +45,24 @@
   <dl class="grid grid-cols-[max-content_1fr] items-center gap-x-4 gap-y-2 text-sm">
     <dt class="text-slate-400">プラグの状態</dt>
     <dd>
-      <form method="post" action="{{ url_for('refresh_status', target='plug') }}" class="float-right">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-        <button type="submit" title="今すぐ取得" class="ml-1 rounded border border-slate-700 px-1.5 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200">取得</button>
-      </form>
       {% if plug.status %}
       {{ state_badge(plug.status.power) }}
-      <span class="text-xs text-slate-500">{{ plug.checked_at|local("%H:%M") }} 確認</span>
+      <span class="text-xs text-slate-500">{{ plug.checked_at|local("%H:%M") }} 確認</span>{{ refresh_button("plug", "プラグの状態") }}
       {% else %}
-      <span class="text-sm text-amber-300">未確認</span>
+      <span class="text-sm text-amber-300">未確認</span>{{ refresh_button("plug", "プラグの状態") }}
       {% if plug.error %}<span class="block text-xs text-slate-500">{{ plug.error }}</span>{% endif %}
       {% endif %}
     </dd>
     <dt class="text-slate-400">ポータブル電源</dt>
     <dd>
-      {% if battery.configured %}<form method="post" action="{{ url_for('refresh_status', target='battery') }}" class="float-right">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-        <button type="submit" title="今すぐ取得" class="ml-1 rounded border border-slate-700 px-1.5 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200">取得</button>
-      </form>{% endif %}
       {% if battery.percent is not none %}
       <span class="font-semibold tabular-nums {{ 'text-rose-300' if battery.percent <= battery.min_percent + 5 }}">{{ battery.percent }}%</span>
-      <span class="text-xs text-slate-400">消費 {{ "%.0f"|format(battery.output_w) }}W・{{ battery.read_at|local("%H:%M") }} 取得</span>
+      <span class="text-xs text-slate-400">消費 {{ "%.0f"|format(battery.output_w) }}W・{{ battery.read_at|local("%H:%M") }} 取得</span>{% if battery.configured %}{{ refresh_button("battery", "ポータブル電源の状態") }}{% endif %}
       {% if battery.eta %}<span class="block text-xs text-amber-300">このままだと {{ battery.eta|local("%H:%M") }} に下限（{{ battery.min_percent }}%）</span>{% endif %}
       {% elif not battery.configured %}
       <span class="text-xs text-slate-500">未設定（残量による判定は行わず OFF 時間の制限で保護）</span>
       {% else %}
-      <span class="text-xs text-slate-500">未取得（スケジュール開始時と OFF 中に取得します）</span>
+      <span class="text-xs text-slate-500">未取得（スケジュール開始時と OFF 中に取得します）</span>{{ refresh_button("battery", "ポータブル電源の状態") }}
       {% endif %}
       {% if battery.error %}<span class="block text-xs text-rose-300">{{ battery.error }}</span>{% endif %}
     </dd>
