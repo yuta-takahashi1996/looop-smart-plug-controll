@@ -18,8 +18,7 @@ from tests.conftest import JST, TEST_PASSWORD, FakeProvider, csrf_token
 
 PAGES = [
     ("/", "ダッシュボード"),
-    ("/forecast", "電力予報"),
-    ("/forecast?day=tomorrow", "電力予報"),
+    ("/?day=tomorrow", "ダッシュボード"),
     ("/schedule", "運転スケジュール"),
     ("/history", "制御履歴"),
     ("/history?date=2026-01-15", "制御履歴"),
@@ -328,15 +327,14 @@ def test_price_view_toggle_switches_to_billing(logged_in_client: TestClient) -> 
     _fetch(logged_in_client)
     _add_adjustment(logged_in_client, amount="7.5")
 
-    response = _set_view(logged_in_client, "billing", "/forecast?day=tomorrow")
+    response = _set_view(logged_in_client, "billing", "/?day=tomorrow")
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/forecast?day=tomorrow"
+    assert response.headers["location"] == "/?day=tomorrow"
     text = logged_in_client.get("/").text
     assert "現在の請求単価" in text
     assert "加算額 7.50" in text
-    assert "請求単価（30分単位）" in logged_in_client.get("/forecast").text
-    assert "この日の加算額の内訳" in logged_in_client.get("/forecast").text
+    assert "の請求単価（30分単位）" in text
 
     _set_view(logged_in_client, "energy")
     assert "現在の電源単価" in logged_in_client.get("/").text
@@ -348,15 +346,21 @@ def test_price_view_toggle_validation(logged_in_client: TestClient) -> None:
     assert logged_in_client.post("/price-view", data={"view": "billing"}).status_code == 403
 
 
-def test_forecast_page_shows_levels(logged_in_client: TestClient) -> None:
+def test_dashboard_chart_shows_levels(logged_in_client: TestClient) -> None:
     _fetch(logged_in_client)
 
-    text = logged_in_client.get("/forecast").text
+    text = logged_in_client.get("/").text
 
-    assert "注意報・警報のコマ" in text
-    assert "17:00" in text and "でんき注意報" in text
-    assert "19:00" in text and "でんき警報" in text
-    assert '"levels": ["NORMAL"' in text
+    assert '"levels": ["NORMAL"' in text and '"ADVISORY"' in text and '"WARNING"' in text
+    assert "注意報・警報" in text and "警報 60分" in text
+
+
+def test_forecast_url_redirects_to_dashboard(logged_in_client: TestClient) -> None:
+    response = logged_in_client.get("/forecast?day=tomorrow", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/?day=tomorrow"
+    assert "電力予報" not in logged_in_client.get("/").text.split("<main")[0]  # ナビから外した
 
 
 def test_refresh_forecast_failure_is_reported(logged_in_client: TestClient, provider: FakeProvider) -> None:
@@ -364,11 +368,11 @@ def test_refresh_forecast_failure_is_reported(logged_in_client: TestClient, prov
 
     response = logged_in_client.post(
         "/forecast/refresh",
-        data={"csrf_token": csrf_token(logged_in_client), "next": "/forecast?day=today"},
+        data={"csrf_token": csrf_token(logged_in_client), "next": "/?day=today"},
         follow_redirects=False,
     )
 
-    assert response.headers["location"] == "/forecast?day=today&refresh=error"
+    assert response.headers["location"] == "/?day=today&refresh=error"
     text = logged_in_client.get(response.headers["location"]).text
     assert "料金予報を取得できませんでした" in text
     assert "timeout" in text
@@ -382,7 +386,7 @@ def test_refresh_forecast_rejects_external_next(logged_in_client: TestClient) ->
         follow_redirects=False,
     )
 
-    assert response.headers["location"] == "/forecast?refresh=ok"
+    assert response.headers["location"] == "/?refresh=ok"
 
 
 def test_refresh_forecast_requires_csrf(logged_in_client: TestClient, provider: FakeProvider) -> None:
@@ -394,14 +398,13 @@ def test_forecast_page_with_data(logged_in_client: TestClient) -> None:
     _fetch(logged_in_client)
 
     for day in ("today", "tomorrow"):
-        text = logged_in_client.get(f"/forecast?day={day}").text
+        text = logged_in_client.get(f"/?day={day}").text
         assert 'id="forecast-data"' in text
         assert "電源単価（30分単位）" in text
-        assert "この日の加算額の内訳" not in text
 
 
 def test_forecast_page_without_data(logged_in_client: TestClient) -> None:
-    text = logged_in_client.get("/forecast?day=today").text
+    text = logged_in_client.get("/?day=today").text
 
     assert "未取得" in text
     assert 'id="forecast-data"' not in text
@@ -632,7 +635,7 @@ def test_auto_enable_setting_enables_advisory(logged_in_client: TestClient, sess
 def test_forecast_page_shows_plan(logged_in_client: TestClient) -> None:
     _fetch(logged_in_client)
 
-    text = logged_in_client.get("/forecast?day=tomorrow").text
+    text = logged_in_client.get("/?day=tomorrow").text
 
     assert '"plan": [null' in text
     assert '"DISABLED"' in text and '"ENABLED"' in text

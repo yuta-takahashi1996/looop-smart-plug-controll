@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import verify_csrf
-from app.api.forecast import PriceView, get_price_view, price_of
+from app.api.forecast import PriceView, chart_context, get_price_view, price_of
 from app.config import Settings, get_settings
 from app.models.schedule import ControlLog, ControlSchedule, PlugState, ScheduleStatus
 from app.models.settings import EventCategory, EventLevel, SystemEvent, load_control_settings, unresolved_events
@@ -198,6 +198,7 @@ def _context(request: Request, session: Session) -> dict:
 @router.get("/", response_class=HTMLResponse, name="dashboard")
 def dashboard(
     request: Request,
+    day: Literal["today", "tomorrow"] = "today",
     refresh: Literal["ok", "error"] | None = None,
     message: str | None = None,
     error: str | None = None,
@@ -206,7 +207,13 @@ def dashboard(
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {**_context(request, session), "refresh_result": refresh, "flash_message": message, "flash_error": error},
+        {
+            **_context(request, session),
+            **chart_context(request, session, day),
+            "refresh_result": refresh,
+            "flash_message": message,
+            "flash_error": error,
+        },
     )
 
 

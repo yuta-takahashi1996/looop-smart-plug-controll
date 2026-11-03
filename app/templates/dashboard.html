@@ -3,6 +3,13 @@
 
 {% block title %}ダッシュボード | Looop Smart Plug Controller{% endblock %}
 
+{% block head %}
+{% if chart_forecast.slots %}
+<script src="{{ url_for('static', path='js/chart.umd.min.js') }}" defer></script>
+<script src="{{ url_for('static', path='js/forecast.js') }}" defer></script>
+{% endif %}
+{% endblock %}
+
 {% block content %}
 {% if flash_message %}<p class="mb-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status">{{ flash_message }}</p>{% endif %}
 {% if flash_error %}<p class="mb-4 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">{{ flash_error }}</p>{% endif %}
@@ -16,6 +23,10 @@
      hx-trigger="every 60s"
      hx-swap="innerHTML">
   {% include "components/dashboard_status.html" %}
+</div>
+
+<div class="mt-4">
+  {% include "components/price_chart.html" %}
 </div>
 
 <div class="mt-4">
