@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.api.auth import verify_csrf
@@ -13,7 +13,6 @@ from app.providers.base import ForecastFetchError
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
 from app.services import optimizer
-from app.templating import templates
 
 router = APIRouter()
 
@@ -26,7 +25,7 @@ PRICE_VIEW_SESSION_KEY = "price_view"
 PRICE_VIEW_LABELS: dict[str, str] = {"energy": "電源単価", "billing": "請求単価"}
 
 # 表示モードの切り替え・再取得の後に戻ってよいパス
-_RETURN_PATHS = ("/", "/forecast", "/forecast?day=today", "/forecast?day=tomorrow")
+_RETURN_PATHS = ("/", "/?day=today", "/?day=tomorrow")
 
 
 def get_price_view(request: Request) -> PriceView:
@@ -37,17 +36,12 @@ def price_of(slot: forecast_service.PriceSlot, view: PriceView) -> float:
     return slot.billing_price if view == "billing" else slot.energy_price
 
 
-def _safe_return(next_path: str, default: str = "/forecast") -> str:
+def _safe_return(next_path: str, default: str = "/") -> str:
     return next_path if next_path in _RETURN_PATHS else default
 
 
-@router.get("/forecast", response_class=HTMLResponse, name="forecast")
-def forecast(
-    request: Request,
-    day: Literal["today", "tomorrow"] = "today",
-    refresh: Literal["ok", "error"] | None = None,
-    session: Session = Depends(get_session),
-) -> HTMLResponse:
+def chart_context(request: Request, session: Session, day: Literal["today", "tomorrow"]) -> dict:
+    """ダッシュボードの料金グラフ（docs/05 §5.4）に渡す値。"""
     settings = get_settings()
     tz = ZoneInfo(settings.tz)
     now = datetime.now(tz)
@@ -68,28 +62,26 @@ def forecast(
         # 当日表示のときのみ、現在時刻のコマ位置（小数）を渡す
         "nowIndex": (now.hour * 60 + now.minute) / 30 if day == "today" else None,
     }
-    errors = [e for e in unresolved_events(session) if e.category == EventCategory.FORECAST]
-    return templates.TemplateResponse(
-        request,
-        "forecast.html",
-        {
-            "day": day,
-            "target": target,
-            "forecast": data,
-            "chart": chart,
-            "view": view,
-            "prices": chart["prices"],
-            "errors": errors,
-            "before_publish": day == "tomorrow" and now.hour < TOMORROW_PUBLISH_HOUR,
-            "refresh_result": refresh,
-        },
-    )
+    return {
+        "chart_day": day,
+        "chart_target": target,
+        "chart_forecast": data,
+        "chart": chart,
+        "chart_errors": [e for e in unresolved_events(session) if e.category == EventCategory.FORECAST],
+        "chart_before_publish": day == "tomorrow" and now.hour < TOMORROW_PUBLISH_HOUR,
+    }
+
+
+@router.get("/forecast", name="forecast")
+def forecast(day: Literal["today", "tomorrow"] = "today") -> RedirectResponse:
+    """電力予報はダッシュボードに統合した（以前の URL・ブックマークのために転送する）。"""
+    return RedirectResponse(f"/?day={day}", status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
 @router.post("/forecast/refresh", name="refresh_forecast", dependencies=[Depends(verify_csrf)])
 def refresh_forecast(
     request: Request,
-    next: Annotated[str, Form()] = "/forecast",
+    next: Annotated[str, Form()] = "/",
     session: Session = Depends(get_session),
 ) -> RedirectResponse:
     """料金予報の手動再取得（docs/05 §5.8）。取得後にスケジュールを再生成する。プラグは操作しないため MANUAL モードには移行しない。"""

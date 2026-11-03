@@ -48,7 +48,6 @@ looop-power-controller/
 │   ├── templates/
 │   │   ├── base.html
 │   │   ├── dashboard.html
-│   │   ├── forecast.html
 │   │   ├── schedule.html
 │   │   ├── history.html
 │   │   ├── settings.html

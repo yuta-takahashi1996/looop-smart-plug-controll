@@ -5,7 +5,7 @@
   {% call card(None) %}
   <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
     <h2 class="text-sm font-semibold text-slate-300">電力情報</h2>
-    {% with view=p.view, return_to="/" %}{% include "components/price_view_toggle.html" %}{% endwith %}
+    {% with view=p.view, return_to="/?day=" ~ (chart_day or "today") %}{% include "components/price_view_toggle.html" %}{% endwith %}
   </div>
   {% set unit_label = "請求単価" if p.view == "billing" else "電源単価" %}
   {% if p.current %}
