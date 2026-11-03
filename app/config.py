@@ -66,10 +66,14 @@ class Settings(BaseSettings):
     jackery_account: str = ""
     jackery_password: SecretStr = SecretStr("")
     jackery_device_id: str = ""
+    # 残量の下限（%）と、残量の減り方の予測に使う容量（docs/07 §7.7）。効率は ROUND_TRIP_EFFICIENCY を共用する
+    battery_min_percent: int = Field(default=5, ge=0, le=100)
+    battery_capacity_wh: float = Field(default=1070, gt=0)
 
     # Schedule（運用時間・OFF時間の制限、推定節約額の算出に使う値）
     # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
     auto_enable: bool = False
+    # ポータブル電源の変換効率（推定節約額の計算と残量の予測に共用）
     round_trip_efficiency: float = Field(default=0.85, gt=0, le=1)
     max_continuous_off_minutes: int = Field(default=120, ge=0)
     max_daily_off_minutes: int = Field(default=180, ge=0)

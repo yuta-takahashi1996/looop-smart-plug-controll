@@ -18,6 +18,8 @@ CONTROL = ControlSettings(
     max_daily_off_minutes=180,
     min_switch_interval_minutes=30,
     estimated_average_power_w=150,
+        battery_min_percent=5,
+        battery_capacity_wh=1070,
 )
 
 
@@ -93,3 +95,48 @@ def test_off_minutes_counts_running_schedule() -> None:
     running = schedule(ForecastLevel.ADVISORY, at(15), at(16), executed_start=at(15))
 
     assert safety.off_minutes([done, running, schedule(ForecastLevel.ADVISORY, at(17), at(18))], at(15, 20)) == 80
+
+
+# --- ポータブル電源の残量 ---
+
+
+def reading(percent: int, watts: float, when: datetime) -> safety.BatteryReading:
+    return safety.BatteryReading(percent, watts, when)
+
+
+def test_battery_below_min_is_rejected() -> None:
+    decision = safety.check_battery(reading(5, 0, at(10)), at(10), CONTROL, average_output_w=None, end_at=None)
+
+    assert not decision.allowed and "下限" in decision.reason
+
+
+def test_battery_projection_until_next_check() -> None:
+    # 150W ÷ 0.85 ÷ 1070Wh ≒ 16.5%/h → 5分で約1.4%
+    assert safety.check_battery(reading(7, 150, at(10)), at(10), CONTROL, average_output_w=None, end_at=None).allowed
+    decision = safety.check_battery(reading(6, 150, at(10)), at(10), CONTROL, average_output_w=None, end_at=None)
+    assert not decision.allowed and "150W" in decision.reason
+
+
+def test_battery_projection_uses_larger_of_current_and_average() -> None:
+    decision = safety.check_battery(reading(7, 50, at(10)), at(10), CONTROL, average_output_w=300, end_at=None)
+
+    assert not decision.allowed and "300W" in decision.reason
+
+
+def test_battery_projection_stops_at_schedule_end() -> None:
+    # 終了まで1分なら、5分先ではなく終了時で判定する
+    assert safety.check_battery(reading(6, 150, at(10)), at(10), CONTROL, average_output_w=None, end_at=at(10, 1)).allowed
+
+
+def test_battery_known_expires_after_10_minutes() -> None:
+    r = reading(50, 100, at(10))
+
+    assert safety.battery_known(r, at(10, 10))
+    assert not safety.battery_known(r, at(10, 11))
+    assert not safety.battery_known(None, at(10))
+
+
+def test_time_to_min_percent() -> None:
+    eta = safety.time_to_min_percent(reading(21.5, 150, at(10)), 150, CONTROL)  # type: ignore[arg-type]
+
+    assert eta is not None and abs((eta - at(11)).total_seconds()) < 60

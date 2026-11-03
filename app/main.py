@@ -18,14 +18,15 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api import auth, dashboard, forecast, history, schedule
+from app.api import auth, control, dashboard, forecast, history, schedule
 from app.api import settings as settings_api
+from app.clients.jackery import JackeryClient
 from app.clients.switchbot import SwitchBotClient
 from app.config import get_settings
 from app.models.forecast import ADJUSTMENT_CATEGORY_LABELS
 from app.providers.looop import LooopForecastProvider
 from app.repositories.database import SessionLocal, get_session
-from app.services.controller import ControlService, PlugMonitor
+from app.services.controller import BatteryMonitor, ControlService, PlugMonitor
 from app.services.scheduler import Jobs, create_scheduler
 from app.templating import templates
 
@@ -47,18 +48,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # 画面とスケジューラーで共有する外部連携。テストでは app.state を差し替える
     app.state.forecast_provider = LooopForecastProvider()
-    app.state.plug_monitor = PlugMonitor(
-        SwitchBotClient(
-            settings.switchbot_token.get_secret_value(),
-            settings.switchbot_secret.get_secret_value(),
-            settings.switchbot_device_id,
-        ),
+    switchbot = SwitchBotClient(
+        settings.switchbot_token.get_secret_value(),
+        settings.switchbot_secret.get_secret_value(),
+        settings.switchbot_device_id,
+    )
+    app.state.plug_monitor = PlugMonitor(switchbot, SessionLocal)
+    battery = BatteryMonitor(
+        JackeryClient(settings.jackery_account, settings.jackery_password.get_secret_value()),
+        settings.jackery_device_id,
         SessionLocal,
     )
     if not app.state.plug_monitor.configured:
         logger.warning("SwitchBot の認証情報が未設定のため、プラグ状態を確認できません")
 
-    app.state.control = ControlService(settings, SessionLocal)
+    app.state.control = ControlService(settings, SessionLocal, switchbot=switchbot, battery=battery)
+    if not app.state.control.dry_run:
+        logger.warning("実制御が有効です（SwitchBot へコマンドを送信します）")
 
     scheduler = None
     if settings.app_env != "test":
@@ -111,13 +117,14 @@ async def login_required_handler(request: Request, exc: auth.LoginRequired) -> R
 
 
 templates.env.globals["csrf_token"] = auth.get_csrf_token
-templates.env.globals["dry_run"] = settings.dry_run
+# 実制御は DRY_RUN=false かつ画面で有効にした場合のみ（実行中に切り替わるため、表示のたびに判定する）
+templates.env.globals["is_dry_run"] = lambda request: request.app.state.control.dry_run
 templates.env.globals["adjustment_labels"] = ADJUSTMENT_CATEGORY_LABELS
 # DB の日時（UTC）を表示用のタイムゾーンへ変換する
 templates.env.filters["local"] = lambda value, fmt: value.astimezone(ZoneInfo(settings.tz)).strftime(fmt)
 
 app.include_router(auth.router)
-for module in (dashboard, forecast, schedule, history, settings_api):
+for module in (dashboard, control, forecast, schedule, history, settings_api):
     app.include_router(module.router, dependencies=[Depends(auth.require_login)])
 
 

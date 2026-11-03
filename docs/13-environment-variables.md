@@ -33,13 +33,13 @@ JACKERY_PASSWORD=
 JACKERY_DEVICE_ID=
 # 残量がこの値（%）以下になる（予測を含む）前に ON に戻す
 BATTERY_MIN_PERCENT=5
-# 残量の減り方の予測に使う容量（Wh）と放電効率
+# 残量の減り方の予測に使う容量（Wh）
 BATTERY_CAPACITY_WH=1070
-BATTERY_DISCHARGE_EFFICIENCY=0.85
 
 # Schedule
 # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
 AUTO_ENABLE=false
+# ポータブル電源の変換効率（推定節約額の計算と残量の予測に共用）
 ROUND_TRIP_EFFICIENCY=0.85
 
 MAX_CONTINUOUS_OFF_MINUTES=120
@@ -75,7 +75,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 
 ## スケジュール
 
-`AUTO_ENABLE`、運用時間、OFF時間の制限、往復効率、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ROUND_TRIP_EFFICIENCY` と `ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。
+`AUTO_ENABLE`、運用時間、OFF時間の制限、往復効率、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。`ROUND_TRIP_EFFICIENCY` は推定節約額の算出（充電に必要な電力量）と残量の予測（電池からの減り方）に共用する。本来は放電だけの効率の方が高いが、共用することで残量の予測は安全側（早めに ON に戻す）になる。
 
 ## Jackery
 

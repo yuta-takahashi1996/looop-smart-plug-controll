@@ -77,7 +77,7 @@
 
 秘匿情報はsystem_settingsへ保存せず、環境変数で管理する。
 
-`price_notices_baseline_at`（お知らせの初回確認日時、docs/06 §6.6）も system_settings に保存する。
+`price_notices_baseline_at`（お知らせの初回確認日時、docs/06 §6.6）、`control_mode`（AUTO / MANUAL）、`real_control_enabled`（実制御の確認操作の有無、docs/14 §14.3）も system_settings に保存する。
 
 ## 10.5 system_events
 
@@ -86,7 +86,7 @@
 | id | 主キー |
 | occurred_at | 発生日時 |
 | level | INFO / WARNING / ERROR |
-| category | FORECAST（予報取得・検証）/ SWITCHBOT（通信）/ PRICE_NOTICE（単価に関わるお知らせ） |
+| category | FORECAST（予報取得・検証）/ SWITCHBOT（通信・コマンドの失敗）/ BATTERY（ポータブル電源の残量取得）/ PRICE_NOTICE（単価に関わるお知らせ） |
 | message | 内容 |
 | reference | 重複検知用のキー（お知らせのURLなど） |
 | resolved_at | 解決日時（未解決は NULL） |

@@ -55,3 +55,65 @@ def check_off(
             return OffDecision(False, f"1日の最大OFF時間（{control.max_daily_off_minutes}分）に達しました")
     return OffDecision(True)
 
+
+# --- ポータブル電源の残量（docs/07 §7.7） ---
+
+BATTERY_CHECK_INTERVAL = timedelta(minutes=5)  # OFF 中の取得間隔
+BATTERY_STALE_AFTER = timedelta(minutes=10)  # これより古い値は「取得できない」とみなす
+
+
+@dataclass(frozen=True)
+class BatteryReading:
+    percent: int  # 残量（%）
+    output_w: float  # 出力電力（家電の消費電力）
+    at: datetime
+
+
+def battery_known(reading: BatteryReading | None, now: datetime) -> bool:
+    return reading is not None and now - reading.at <= BATTERY_STALE_AFTER
+
+
+def drain_percent_per_hour(power_w: float, control: ControlSettings) -> float:
+    # 出力（家電の消費電力）より、変換ロスの分だけ多く電池から減る。効率は節約額の計算と共用（安全側に低めになる）
+    return power_w / control.round_trip_efficiency / control.battery_capacity_wh * 100
+
+
+def projected_percent(reading: BatteryReading, power_w: float, until: datetime, control: ControlSettings) -> float:
+    hours = max(0.0, (until - reading.at).total_seconds() / 3600)
+    return reading.percent - drain_percent_per_hour(power_w, control) * hours
+
+
+def check_battery(
+    reading: BatteryReading,
+    now: datetime,
+    control: ControlSettings,
+    *,
+    average_output_w: float | None,
+    end_at: datetime | None,
+) -> OffDecision:
+    """残量と、次の取得時（終了の方が早ければ終了時）の予測残量が下限を下回らないか。
+
+    消費電力は今回値と OFF 中の平均の大きい方を使い、予測を安全側に寄せる。
+    """
+    if reading.percent <= control.battery_min_percent:
+        return OffDecision(False, f"ポータブル電源の残量（{reading.percent}%）が下限（{control.battery_min_percent}%）以下です")
+    power = max(reading.output_w, average_output_w or 0.0)
+    horizon = now + BATTERY_CHECK_INTERVAL
+    if end_at is not None:
+        horizon = min(horizon, end_at)
+    projected = projected_percent(reading, power, horizon, control)
+    if projected < control.battery_min_percent:
+        return OffDecision(
+            False,
+            f"消費電力 {power:.0f}W が続くと {horizon:%H:%M} に残量が {projected:.1f}% になり、"
+            f"下限（{control.battery_min_percent}%）を下回るため",
+        )
+    return OffDecision(True)
+
+
+def time_to_min_percent(reading: BatteryReading, power_w: float, control: ControlSettings) -> datetime | None:
+    """このままの消費電力で下限に達する見込み時刻（画面表示用）。"""
+    drain = drain_percent_per_hour(power_w, control)
+    if drain <= 0:
+        return None
+    return reading.at + timedelta(hours=(reading.percent - control.battery_min_percent) / drain)

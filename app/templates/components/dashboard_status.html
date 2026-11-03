@@ -53,6 +53,19 @@
       {% if plug.error %}<span class="block text-xs text-slate-500">{{ plug.error }}</span>{% endif %}
       {% endif %}
     </dd>
+    <dt class="text-slate-400">ポータブル電源</dt>
+    <dd>
+      {% if battery.percent is not none %}
+      <span class="font-semibold tabular-nums {{ 'text-rose-300' if battery.percent <= battery.min_percent + 5 }}">{{ battery.percent }}%</span>
+      <span class="text-xs text-slate-400">消費 {{ "%.0f"|format(battery.output_w) }}W・{{ battery.read_at|local("%H:%M") }} 取得</span>
+      {% if battery.eta %}<span class="block text-xs text-amber-300">このままだと {{ battery.eta|local("%H:%M") }} に下限（{{ battery.min_percent }}%）</span>{% endif %}
+      {% elif not battery.configured %}
+      <span class="text-xs text-slate-500">未設定（残量による判定は行わず OFF 時間の制限で保護）</span>
+      {% else %}
+      <span class="text-xs text-slate-500">未取得（スケジュール開始時と OFF 中に取得します）</span>
+      {% endif %}
+      {% if battery.error %}<span class="block text-xs text-rose-300">{{ battery.error }}</span>{% endif %}
+    </dd>
     <dt class="text-slate-400">システム</dt>
     <dd>{{ state_badge(system_status) }}</dd>
     <dt class="text-slate-400">自動制御</dt>

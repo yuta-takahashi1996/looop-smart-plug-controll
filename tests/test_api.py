@@ -9,7 +9,7 @@ from app.api.auth import hash_password, verify_password
 from app.clients.switchbot import PlugStatus
 from app.main import app
 from app.models.forecast import PriceAdjustment
-from app.models.schedule import ControlSchedule
+from app.models.schedule import ControlLog, ControlSchedule
 from app.models.settings import SystemEvent
 from app.providers.base import ForecastFetchError, Notice
 from app.services.controller import PlugSnapshot
@@ -34,6 +34,8 @@ VALID_SETTINGS = {
     "max_daily_off_minutes": "150",
     "min_switch_interval_minutes": "30",
     "estimated_average_power_w": "200",
+    "battery_min_percent": "5",
+    "battery_capacity_wh": "1070",
 }
 
 
@@ -239,7 +241,7 @@ def test_settings_accepts_csrf_header(logged_in_client: TestClient) -> None:
     [
         ({"operation_start": "18:00", "operation_end": "09:00"}, "運用開始時刻は運用終了時刻より前"),
         ({"max_continuous_off_minutes": "200", "max_daily_off_minutes": "100"}, "最大連続OFF時間は"),
-        ({"round_trip_efficiency": "120"}, "充放電往復効率"),
+        ({"round_trip_efficiency": "120"}, "ポータブル電源の変換効率"),
         ({"estimated_average_power_w": "abc"}, "想定平均負荷"),
     ],
 )
@@ -672,3 +674,64 @@ def test_dashboard_shows_dry_run_control_state(logged_in_client: TestClient) -> 
 
     assert "GRID" in text
     assert "最終操作" in text and "Dry Run の推定値" in text
+
+
+# --- 実制御・手動操作（Phase 6） ---
+
+
+def _post(client: TestClient, path: str, **data: str) -> Response:
+    return client.post(path, data={**data, "csrf_token": csrf_token(client)}, follow_redirects=False)
+
+
+def test_manual_power_switches_to_manual_mode(logged_in_client: TestClient, session) -> None:
+    response = _post(logged_in_client, "/control/plug/off")
+
+    assert response.status_code == 303
+    text = logged_in_client.get(response.headers["location"]).text
+    assert "プラグを OFF にしました" in text and "Dry Run" in text
+    assert "MANUAL" in text
+    session.expire_all()
+    log = session.scalars(select(ControlLog).order_by(ControlLog.id.desc())).first()
+    assert (log.source.value, log.requested_state.value, log.result.value) == ("MANUAL", "OFF", "DRY_RUN")
+
+    _post(logged_in_client, "/control/auto/start")
+    assert app.state.control.control_mode == "AUTO"
+
+
+def test_stop_and_start_auto_control(logged_in_client: TestClient) -> None:
+    response = _post(logged_in_client, "/control/auto/stop")
+
+    assert "自動制御を停止しました" in logged_in_client.get(response.headers["location"]).text
+    assert app.state.control.control_mode == "MANUAL"
+    _post(logged_in_client, "/control/auto/start")
+    assert app.state.control.control_mode == "AUTO"
+
+
+def test_manual_operations_require_csrf(logged_in_client: TestClient) -> None:
+    assert logged_in_client.post("/control/plug/off").status_code == 403
+    assert logged_in_client.post("/control/auto/stop").status_code == 403
+    assert app.state.control.control_mode == "AUTO"
+
+
+def test_real_control_cannot_be_enabled_while_dry_run_env(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/settings").text
+    assert "DRY_RUN=false" in text and "実制御を開始</button>" not in text
+
+    response = _post(logged_in_client, "/control/real-mode", enabled="true", confirmation="実制御を開始")
+
+    assert "DRY_RUN=false" in logged_in_client.get(response.headers["location"]).text
+    assert app.state.control.dry_run
+
+
+def test_real_control_requires_confirmation_text(logged_in_client: TestClient) -> None:
+    response = _post(logged_in_client, "/control/real-mode", enabled="true", confirmation="はい")
+
+    assert "「実制御を開始」と入力してください" in logged_in_client.get(response.headers["location"]).text
+    assert app.state.control.dry_run
+
+
+def test_dashboard_shows_battery_not_configured(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/").text
+
+    assert "ポータブル電源" in text and "未設定" in text
+    assert "DRY RUN" in text
