@@ -9,7 +9,7 @@
 | control_logs | 操作・実行履歴 |
 | system_settings | システム設定 |
 | system_events | エラー・イベント履歴 |
-| daily_summaries | 日次集計・推定節約額 |
+| daily_summaries | 日次集計・推定節約額（Phase 7 で実装。それまでは control_schedules・control_logs から都度集計する） |
 | price_adjustments | 請求単価への加算額 |
 
 日時はすべて UTC で保存し、表示時に `TZ` のタイムゾーンへ変換する。
@@ -45,7 +45,10 @@
 | manually_modified | 手動変更済み（有効・無効の切り替えまたは時間変更。再生成で上書きしない） |
 | reason | 制御理由 |
 | estimated_saving | 推定節約額（電源単価で算出） |
-| status | 実行状態（PENDING。実行は Phase 5 以降） |
+| status | 実行状態（PENDING / RUNNING / DONE / ABORTED / SKIPPED、docs/07 §7.8） |
+| executed_start_at / executed_end_at | 実際に OFF にした（Dry Run では OFF にするはずだった）時間帯 |
+| executed_saving | 実行した時間帯の推定節約額（推定節約額の検証用） |
+| status_reason | 中断・未実行の理由 |
 | updated_at | 更新日時 |
 
 ## 10.3 control_logs
@@ -56,10 +59,13 @@
 | executed_at | 操作日時 |
 | source | AUTO/MANUAL/SAFETY |
 | previous_state | 操作前状態 |
-| requested_state | 要求状態 |
-| actual_state | 確認結果 |
-| result | 成功・失敗・未確認 |
+| requested_state | 要求状態（ON / OFF） |
+| actual_state | 確認結果（操作後に取得したプラグの状態。Dry Run では NULL） |
+| result | SUCCESS（成功）/ FAILED（失敗）/ UNCONFIRMED（未確認）/ DRY_RUN（Dry Run のため送信していない） |
+| reason | 制御理由 |
 | error_message | エラー内容 |
+| dry_run | Dry Run での記録か |
+| schedule_id | スケジュールによる操作の場合、そのスケジュール |
 
 ## 10.4 system_settings
 
