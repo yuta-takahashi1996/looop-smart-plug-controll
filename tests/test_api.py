@@ -638,3 +638,37 @@ def test_forecast_page_shows_plan(logged_in_client: TestClient) -> None:
 
 def test_schedule_page_without_forecast(logged_in_client: TestClient) -> None:
     assert "料金予報が未取得" in logged_in_client.get("/schedule?day=tomorrow").text
+
+
+# --- Dry Run（Phase 5） ---
+
+
+def test_history_shows_control_logs(logged_in_client: TestClient) -> None:
+    app.state.control.initialize()
+
+    text = logged_in_client.get("/history").text
+
+    assert "起動時の安全側への初期化" in text
+    assert "SAFETY" in text and "Dry Run" in text
+    assert "実行するはずだった操作" in text
+
+
+def test_history_date_filter(logged_in_client: TestClient) -> None:
+    app.state.control.initialize()
+
+    text = logged_in_client.get("/history?date=2020-01-01").text
+
+    assert "起動時の安全側への初期化" not in text
+    assert "この日の操作履歴はありません" in text
+
+
+def test_dashboard_shows_dry_run_control_state(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/").text
+    assert "SAFE" in text  # 初期化前
+    assert "有効（Dry Run）" in text
+
+    app.state.control.initialize()
+    text = logged_in_client.get("/").text
+
+    assert "GRID" in text
+    assert "最終操作" in text and "Dry Run の推定値" in text

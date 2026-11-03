@@ -1,4 +1,4 @@
-{% from "components/ui.html" import card, stat, state_badge, mock_badge, level_badge %}
+{% from "components/ui.html" import card, stat, state_badge, level_badge %}
 {%- set p = prices -%}
 {%- set c = control -%}
 <div class="grid gap-4 lg:grid-cols-3">
@@ -55,8 +55,10 @@
     </dd>
     <dt class="text-slate-400">システム</dt>
     <dd>{{ state_badge(system_status) }}</dd>
-    <dt class="text-slate-400">自動制御 {{ mock_badge() }}</dt>
-    <dd>{{ "有効" if c.auto_control_enabled else "停止中" }} {{ state_badge(c.mode) }}</dd>
+    <dt class="text-slate-400">自動制御</dt>
+    <dd>{{ "有効（Dry Run）" if c.dry_run else "有効" }} {{ state_badge(c.mode) }}
+      {% if c.dry_run %}<span class="block text-xs text-slate-500">想定の状態（コマンドは送信していません）</span>{% endif %}
+    </dd>
     <dt class="text-slate-400">次の OFF 予定</dt>
     <dd>
       {% if next_off %}
@@ -71,10 +73,11 @@
       <a href="{{ url_for('schedule') }}" class="mt-1 block text-xs text-amber-300 hover:underline">無効の注意報スケジュール {{ pending_advisories }}件</a>
       {% endif %}
     </dd>
-    <dt class="text-slate-400">最終操作 {{ mock_badge() }}</dt>
+    <dt class="text-slate-400">最終操作</dt>
     <dd>
       {% if c.last_log %}
-      {{ c.last_log.executed_at.strftime("%H:%M") }} {{ state_badge(c.last_log.source) }} {{ state_badge(c.last_log.result) }}
+      <a href="{{ url_for('history') }}" class="hover:underline">{{ c.last_log.executed_at|local("%m/%d %H:%M") }}</a>
+      {{ state_badge(c.last_log.source) }} → {{ state_badge(c.last_log.requested_state) }} {{ state_badge(c.last_log.result) }}
       {% else %}
       <span class="text-slate-500">なし</span>
       {% endif %}
@@ -83,7 +86,7 @@
   {% endcall %}
 
   {% call card("集計情報") %}
-  <p class="-mt-1 mb-3">{{ mock_badge("モック（Phase 5 で実装）") }}</p>
+  {% if c.dry_run %}<p class="-mt-1 mb-3 text-xs text-amber-300">Dry Run の推定値（実際には切り替えていません）</p>{% endif %}
   <dl class="grid grid-cols-2 gap-4">
     {{ stat("本日の推定節約額", "%.1f"|format(c.today_saving), "円") }}
     {{ stat("今月の推定節約額", "%.1f"|format(c.month_saving), "円") }}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card, level_badge %}
+{% from "components/ui.html" import card, level_badge, state_badge %}
 
 {% block title %}運転スケジュール | Looop Smart Plug Controller{% endblock %}
 
@@ -33,9 +33,17 @@
 
 {% macro state_text(s, started) -%}
 {% if s.enabled %}<span class="font-medium text-emerald-300">有効</span>{% else %}<span class="text-slate-400">無効</span>{% endif %}
+{% if s.status != "PENDING" %}{{ state_badge(s.status) }}{% endif %}
 <span class="block text-xs text-slate-500">
-  {{ "手動" if s.enabled_by == "MANUAL" else "自動" }}{% if s.manually_modified %}・手動変更済み{% endif %}{% if started %}・開始済み{% endif %}
+  {{ "手動" if s.enabled_by == "MANUAL" else "自動" }}{% if s.manually_modified %}・手動変更済み{% endif %}{% if started and s.status == "PENDING" %}・開始済み{% endif %}
 </span>
+{% if s.status_reason %}<span class="block text-xs text-amber-300">{{ s.status_reason }}</span>{% endif %}
+{% if s.executed_start_at %}<span class="block text-xs text-slate-500">実行 {{ s.executed_start_at|local("%H:%M") }}〜{{ s.executed_end_at|local("%H:%M") if s.executed_end_at else "" }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro saving_text(s) -%}
+<span class="tabular-nums">{{ "%.1f"|format(s.estimated_saving) }}円</span>
+{% if s.executed_saving is not none %}<span class="block text-xs text-slate-400 tabular-nums">実行分 {{ "%.1f"|format(s.executed_saving) }}円</span>{% endif %}
 {%- endmacro %}
 
 {% macro time_range(s) -%}
@@ -97,7 +105,7 @@
         <td class="px-4 py-3">{{ level_badge(s.source_level) }}</td>
         <td class="whitespace-nowrap px-4 py-3">{{ state_text(s, started) }}</td>
         <td class="px-4 py-3">{{ s.reason }}</td>
-        <td class="whitespace-nowrap px-4 py-3 text-right tabular-nums">{{ "%.1f"|format(s.estimated_saving) }}円</td>
+        <td class="whitespace-nowrap px-4 py-3 text-right">{{ saving_text(s) }}</td>
         <td class="px-4 py-3">{{ actions(s, started) }}</td>
       </tr>
       {% endfor %}
@@ -114,7 +122,7 @@
     </div>
     <div class="mt-2 flex items-start justify-between gap-2">
       <div>{{ state_text(s, started) }}</div>
-      <span class="tabular-nums">推定 {{ "%.1f"|format(s.estimated_saving) }}円</span>
+      <span class="text-right">推定 {{ saving_text(s) }}</span>
     </div>
     <p class="mt-2 text-xs text-slate-400">{{ s.reason }}</p>
     <div class="mt-3">{{ actions(s, started) }}</div>
@@ -131,6 +139,7 @@
 <div class="mt-3 space-y-1 text-xs text-slate-500">
   <p>でんき警報のスケジュールは常に有効、でんき注意報は「自動適用（AUTO_ENABLE）」が{{ "有効" if control.auto_enable else "無効" }}のため{{ "自動で有効" if control.auto_enable else "個別に有効にしない限り実行しません" }}。設定は<a href="{{ url_for('settings') }}" class="underline">設定画面</a>で変更できます。</p>
   <p>時間は30分単位で変更でき、他のスケジュールと重ならず、間隔が0分（連続）か最低切り替え間隔（{{ control.min_switch_interval_minutes }}分）以上である必要があります。でんき注意報は運用時間（{{ control.operation_start.strftime("%H:%M") }}〜{{ control.operation_end.strftime("%H:%M") }}）・最大連続OFF（{{ control.max_continuous_off_minutes }}分）・1日の最大OFF（{{ control.max_daily_off_minutes }}分）の範囲内に限ります。</p>
-  <p>手動で変更したスケジュールは、予報の再取得や再生成で上書きされません。スケジュールの実行（プラグの操作）は Phase 5 以降で実装します。</p>
+  <p>手動で変更したスケジュールは、予報の再取得や再生成で上書きされません。</p>
+  <p>有効なスケジュールは1分ごとの制御サイクルで実行します。実行時にも OFF 時間の制限を確認し、到達した場合は途中で ON に戻します（中断）。{% if dry_run %}Dry Run 中のため、プラグは操作せず履歴に記録するだけです。{% endif %}</p>
 </div>
 {% endblock %}

@@ -32,12 +32,18 @@
     <tbody class="divide-y divide-slate-800/70">
       {% for log in logs %}
       <tr>
-        <td class="whitespace-nowrap px-4 py-2 tabular-nums">{{ log.executed_at.strftime("%m/%d %H:%M") }}</td>
+        <td class="whitespace-nowrap px-4 py-2 tabular-nums">{{ log.executed_at|local("%m/%d %H:%M:%S") }}</td>
         <td class="px-4 py-2">{{ state_badge(log.source) }}</td>
-        <td class="px-4 py-2">{{ log.previous_state }}</td>
-        <td class="px-4 py-2">{{ log.requested_state }}</td>
-        <td class="whitespace-nowrap px-4 py-2">{{ state_badge(log.result) }} {{ log.actual_state or "—" }}</td>
-        <td class="px-4 py-2">{{ log.reason }}</td>
+        <td class="px-4 py-2">{{ log.previous_state or "—" }}</td>
+        <td class="px-4 py-2">{{ state_badge(log.requested_state) }}</td>
+        <td class="whitespace-nowrap px-4 py-2">
+          {{ state_badge(log.result) }}
+          {% if log.actual_state %}<span class="ml-1">{{ log.actual_state }}</span>{% endif %}
+        </td>
+        <td class="px-4 py-2">
+          {{ log.reason }}
+          {% if log.schedule_id %}<a href="{{ url_for('schedule') }}" class="ml-1 text-xs text-slate-500 underline">スケジュール #{{ log.schedule_id }}</a>{% endif %}
+        </td>
         <td class="px-4 py-2 text-rose-300">{{ log.error_message or "" }}</td>
       </tr>
       {% endfor %}
@@ -48,5 +54,8 @@
 <p class="text-sm text-slate-400">この日の操作履歴はありません。</p>
 {% endif %}
 {% endcall %}
-<p class="mt-2 text-xs text-slate-500">モックデータを表示しています（制御ログの記録は Phase 5 以降で実装予定）。</p>
+<p class="mt-2 text-xs text-slate-500">
+  {% if dry_run %}Dry Run 中のため、SwitchBot へのコマンドは送信していません。「Dry Run」の行は実行するはずだった操作です。{% endif %}
+  操作元：AUTO＝スケジュール、MANUAL＝手動操作、SAFETY＝安全制御（起動・終了時の ON 復帰、制限への到達など）。
+</p>
 {% endblock %}
