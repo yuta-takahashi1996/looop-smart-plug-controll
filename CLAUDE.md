@@ -123,7 +123,7 @@ Web UI（手動操作） ──────────────→  Control 
 
 ## データモデル（SQLite、[docs/10-database.md](docs/10-database.md)）
 
-7テーブル構成：`forecast_prices`（30分単位の電源料金単価）、`price_adjustments`（請求単価への加算額。適用期間付き）、`control_schedules`（予定されたON/OFF計画。理由と推定節約額を含む）、`control_logs`（実際の全操作履歴。`AUTO`/`MANUAL`/`SAFETY`のいずれかに分類し、操作前・要求・確認後の状態を記録）、`system_settings`（key/value。**秘匿情報は保存しない** — 認証情報は環境変数のみで管理する）、`system_events`、`daily_summaries`。
+8テーブル構成：`forecast_prices`（30分単位の電源料金単価）、`price_adjustments`（請求単価への加算額。適用期間付き）、`control_schedules`（予定されたON/OFF計画。理由と推定節約額を含む）、`control_logs`（実際の全操作履歴。`AUTO`/`MANUAL`/`SAFETY`のいずれかに分類し、操作前・要求・確認後の状態を記録）、`system_settings`（key/value。**秘匿情報は保存しない** — 認証情報は環境変数のみで管理する）、`system_events`、`daily_summaries`、`schedule_rules`（任意スケジュールのルール。当日・翌日分を `control_schedules` に展開）。
 
 ## Dry Runモード
 
