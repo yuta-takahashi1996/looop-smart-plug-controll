@@ -34,7 +34,8 @@
 | カラム | 説明 |
 |---|---|
 | id | 主キー |
-| schedule_version | スケジュール版数 |
+| schedule_date | 対象日（表示用のタイムゾーンの日付） |
+| schedule_version | スケジュール版数（対象日ごとの生成回数） |
 | start_at | 制御開始日時 |
 | end_at | 制御終了日時 |
 | target_state | ON/OFF |
@@ -44,7 +45,8 @@
 | manually_modified | 手動変更済み（有効・無効の切り替えまたは時間変更。再生成で上書きしない） |
 | reason | 制御理由 |
 | estimated_saving | 推定節約額（電源単価で算出） |
-| status | 実行状態 |
+| status | 実行状態（PENDING。実行は Phase 5 以降） |
+| updated_at | 更新日時 |
 
 ## 10.3 control_logs
 
