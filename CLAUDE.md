@@ -115,7 +115,7 @@ Web UI（手動操作） ──────────────→  Control 
 - OFF スケジュールは、でんき予報の区分（`forecast_prices.level`）の注意報・警報が連続する区間から生成する。独自の価格差による最適化はしない。
 - でんき警報のスケジュールは常に有効、でんき注意報は `AUTO_ENABLE` が有効なときのみ自動で有効。それ以外はユーザーが個別に有効にしない限り実行しない。ユーザーは個別に有効・無効を切り替え、他のスケジュールと矛盾しない範囲で時間を変更できる。手動変更は再生成で上書きしない。
 - 制御の判断・推定節約額は**電源単価**で行う。請求単価（電源単価＋`price_adjustments`）は画面表示専用（電源単価／請求単価の切り替え表示）。
-- ポータブル電源（Jackery 1000 New）の残量は Jackery クラウドの非公式 API から取得する（`app/clients/jackery.py`、[docs/08-switchbot-api.md](docs/08-switchbot-api.md) §8.4）。OFF 中に残量が `BATTERY_MIN_PERCENT`（初期値 5%）以下になったら、でんき警報中でも ON に戻す（[docs/07-control-logic.md](docs/07-control-logic.md) §7.7、Phase 6 で実装）。取得専用アカウントを使う（同時ログイン1台の制限のため）。
+- ポータブル電源（Jackery 1000 New）の残量は Jackery クラウドの非公式 API から取得する（`app/clients/jackery.py`、[docs/08-switchbot-api.md](docs/08-switchbot-api.md) §8.4）。残量と消費電力（出力W）はスケジュール開始時と OFF 中5分ごとに取得し、次の取得時の予測残量が `BATTERY_MIN_PERCENT`（初期値 5%）を下回る前に、でんき警報中でも ON に戻す（[docs/07-control-logic.md](docs/07-control-logic.md) §7.7、Phase 6 で実装）。取得専用アカウントを使う（同時ログイン1台の制限のため）。
 - 注意報のスケジュールは `MAX_CONTINUOUS_OFF_MINUTES`、`MAX_DAILY_OFF_MINUTES`、運用時間で保守的に制限する。警報のスケジュールは、残量を取得できる間に限りこれらの制限を超えてよく（`MIN_SWITCH_INTERVAL_MINUTES` は適用）、残量を取得できない間は注意報と同じ制限を実行時に適用する。
 
 ## データモデル（SQLite、[docs/10-database.md](docs/10-database.md)）
