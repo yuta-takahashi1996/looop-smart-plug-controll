@@ -4,6 +4,7 @@
 MANUAL モードへ移行し、自動制御で上書きしない。安全制御は MANUAL 中も継続する。
 """
 
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 from urllib.parse import quote
 
@@ -66,3 +67,18 @@ def real_mode(
     except ValueError as exc:
         return _back("/settings", str(exc), error=True)
     return _back("/settings", "実制御を開始しました。次の制御サイクルから SwitchBot へコマンドを送信します")
+
+
+@router.post("/control/refresh/{target}", name="refresh_status", dependencies=[Depends(verify_csrf)])
+def refresh_status(request: Request, target: Literal["plug", "battery"]) -> RedirectResponse:
+    """プラグ・ポータブル電源の状態を今すぐ取得する（読み取りのみ。制御はしない）。"""
+    if target == "plug":
+        snapshot = request.app.state.plug_monitor.refresh()
+        if snapshot.status is None:
+            return _back("/", f"プラグの状態を取得できませんでした：{snapshot.error}", error=True)
+        return _back("/", f"プラグの状態を取得しました（{snapshot.status.power}）")
+    battery = request.app.state.control.battery
+    reading = battery.read(datetime.now(UTC))
+    if reading is None:
+        return _back("/", f"ポータブル電源の状態を取得できませんでした：{battery.last_error}", error=True)
+    return _back("/", f"ポータブル電源の状態を取得しました（残量 {reading.percent}%・消費 {reading.output_w:.0f}W）")

@@ -1,7 +1,71 @@
 {% extends "base.html" %}
 {% from "components/ui.html" import card, state_badge %}
 
-{% block title %}制御履歴 | Looop Smart Plug Controller{% endblock %}
+{% block title %}制御履歴 | Looop Smart Plug Controller
+<div class="mt-6">
+  {% call card(None, id="monthly") %}
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-sm font-semibold text-slate-300">月別の実績（日次集計）</h2>
+    <form method="get" action="{{ url_for('history') }}#monthly" class="flex items-center gap-2 text-sm">
+      <input type="hidden" name="date" value="{{ day.isoformat() }}">
+      <input type="month" name="month" value="{{ month }}" max="{{ today.strftime('%Y-%m') }}"
+             class="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 [color-scheme:dark]">
+      <button type="submit" class="rounded-md bg-slate-700 px-3 py-1.5 hover:bg-slate-600">表示</button>
+    </form>
+  </div>
+  {% if summaries %}
+  <div class="-mx-4 overflow-x-auto">
+    <table class="w-full min-w-[48rem] text-left text-sm">
+      <thead class="whitespace-nowrap border-b border-slate-800 text-xs text-slate-400">
+        <tr>
+          <th class="px-4 py-2 font-medium">日付</th>
+          <th class="px-4 py-2 text-right font-medium">OFF時間</th>
+          <th class="px-4 py-2 text-right font-medium">切り替え</th>
+          <th class="px-4 py-2 text-right font-medium">完了／中断／未実行</th>
+          <th class="px-4 py-2 text-right font-medium">推定節約額</th>
+          <th class="px-4 py-2 text-right font-medium">残量の減少</th>
+          <th class="px-4 py-2 text-right font-medium">実測の平均消費</th>
+          <th class="px-4 py-2 text-right font-medium">失敗</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800/70 tabular-nums">
+        {% for s in summaries %}
+        <tr>
+          <td class="whitespace-nowrap px-4 py-2">
+            <a href="{{ url_for('history') }}?date={{ s.summary_date.isoformat() }}&month={{ month }}" class="hover:underline">{{ s.summary_date.strftime("%m/%d") }}</a>
+            {% if s.dry_run %}<span class="ml-1 text-xs text-amber-300">Dry Run</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right">{{ s.off_minutes }}分</td>
+          <td class="px-4 py-2 text-right">{{ s.switch_count }}回</td>
+          <td class="px-4 py-2 text-right">{{ s.schedules_done }}／{{ s.schedules_aborted }}／{{ s.schedules_skipped }}</td>
+          <td class="px-4 py-2 text-right">{{ "%.1f"|format(s.estimated_saving) }}円</td>
+          <td class="px-4 py-2 text-right">{{ "%d%%"|format(s.battery_used_percent) if s.battery_used_percent is not none else "—" }}</td>
+          <td class="px-4 py-2 text-right">{{ "%.0fW"|format(s.measured_power_w) if s.measured_power_w is not none else "—" }}</td>
+          <td class="px-4 py-2 text-right {{ 'text-rose-300' if s.failed_operations }}">{{ s.failed_operations }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="border-t border-slate-700 font-semibold tabular-nums">
+        <tr>
+          <td class="px-4 py-2">合計</td>
+          <td class="px-4 py-2 text-right">{{ totals.off_minutes }}分</td>
+          <td class="px-4 py-2 text-right">{{ totals.switch_count }}回</td>
+          <td class="px-4 py-2 text-right">{{ totals.schedules_done }}／{{ totals.schedules_aborted }}／—</td>
+          <td class="px-4 py-2 text-right">{{ "%.1f"|format(totals.estimated_saving) }}円</td>
+          <td class="px-4 py-2 text-right">—</td>
+          <td class="px-4 py-2 text-right">—</td>
+          <td class="px-4 py-2 text-right">{{ totals.failed_operations }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-sm text-slate-400">この月の日次集計はありません。</p>
+  {% endif %}
+  <p class="mt-2 text-xs text-slate-500">日次集計は毎日 0:05 に前日分を作成します（当日分はダッシュボードの集計情報で確認できます）。残量の減少・平均消費電力はポータブル電源の残量を取得できたスケジュールの実測値です。</p>
+  {% endcall %}
+</div>
+{% endblock %}
 
 {% block content %}
 <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -15,6 +79,7 @@
 </div>
 
 {% call card(None) %}
+<h2 class="mb-3 text-sm font-semibold text-slate-300">{{ day.strftime("%Y/%m/%d") }} の操作履歴</h2>
 {% if logs %}
 <div class="-mx-4 overflow-x-auto">
   <table class="w-full min-w-[52rem] text-left text-sm">
@@ -58,4 +123,68 @@
   {% if is_dry_run(request) %}Dry Run 中のため、SwitchBot へのコマンドは送信していません。「Dry Run」の行は実行するはずだった操作です。{% endif %}
   操作元：AUTO＝スケジュール、MANUAL＝手動操作、SAFETY＝安全制御（起動・終了時の ON 復帰、制限への到達など）。
 </p>
+
+<div class="mt-6">
+  {% call card(None, id="monthly") %}
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-sm font-semibold text-slate-300">月別の実績（日次集計）</h2>
+    <form method="get" action="{{ url_for('history') }}#monthly" class="flex items-center gap-2 text-sm">
+      <input type="hidden" name="date" value="{{ day.isoformat() }}">
+      <input type="month" name="month" value="{{ month }}" max="{{ today.strftime('%Y-%m') }}"
+             class="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 [color-scheme:dark]">
+      <button type="submit" class="rounded-md bg-slate-700 px-3 py-1.5 hover:bg-slate-600">表示</button>
+    </form>
+  </div>
+  {% if summaries %}
+  <div class="-mx-4 overflow-x-auto">
+    <table class="w-full min-w-[48rem] text-left text-sm">
+      <thead class="whitespace-nowrap border-b border-slate-800 text-xs text-slate-400">
+        <tr>
+          <th class="px-4 py-2 font-medium">日付</th>
+          <th class="px-4 py-2 text-right font-medium">OFF時間</th>
+          <th class="px-4 py-2 text-right font-medium">切り替え</th>
+          <th class="px-4 py-2 text-right font-medium">完了／中断／未実行</th>
+          <th class="px-4 py-2 text-right font-medium">推定節約額</th>
+          <th class="px-4 py-2 text-right font-medium">残量の減少</th>
+          <th class="px-4 py-2 text-right font-medium">実測の平均消費</th>
+          <th class="px-4 py-2 text-right font-medium">失敗</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800/70 tabular-nums">
+        {% for s in summaries %}
+        <tr>
+          <td class="whitespace-nowrap px-4 py-2">
+            <a href="{{ url_for('history') }}?date={{ s.summary_date.isoformat() }}&month={{ month }}" class="hover:underline">{{ s.summary_date.strftime("%m/%d") }}</a>
+            {% if s.dry_run %}<span class="ml-1 text-xs text-amber-300">Dry Run</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right">{{ s.off_minutes }}分</td>
+          <td class="px-4 py-2 text-right">{{ s.switch_count }}回</td>
+          <td class="px-4 py-2 text-right">{{ s.schedules_done }}／{{ s.schedules_aborted }}／{{ s.schedules_skipped }}</td>
+          <td class="px-4 py-2 text-right">{{ "%.1f"|format(s.estimated_saving) }}円</td>
+          <td class="px-4 py-2 text-right">{{ "%d%%"|format(s.battery_used_percent) if s.battery_used_percent is not none else "—" }}</td>
+          <td class="px-4 py-2 text-right">{{ "%.0fW"|format(s.measured_power_w) if s.measured_power_w is not none else "—" }}</td>
+          <td class="px-4 py-2 text-right {{ 'text-rose-300' if s.failed_operations }}">{{ s.failed_operations }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot class="border-t border-slate-700 font-semibold tabular-nums">
+        <tr>
+          <td class="px-4 py-2">合計</td>
+          <td class="px-4 py-2 text-right">{{ totals.off_minutes }}分</td>
+          <td class="px-4 py-2 text-right">{{ totals.switch_count }}回</td>
+          <td class="px-4 py-2 text-right">{{ totals.schedules_done }}／{{ totals.schedules_aborted }}／—</td>
+          <td class="px-4 py-2 text-right">{{ "%.1f"|format(totals.estimated_saving) }}円</td>
+          <td class="px-4 py-2 text-right">—</td>
+          <td class="px-4 py-2 text-right">—</td>
+          <td class="px-4 py-2 text-right">{{ totals.failed_operations }}</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-sm text-slate-400">この月の日次集計はありません。</p>
+  {% endif %}
+  <p class="mt-2 text-xs text-slate-500">日次集計は毎日 0:05 に前日分を作成します（当日分はダッシュボードの集計情報で確認できます）。残量の減少・平均消費電力はポータブル電源の残量を取得できたスケジュールの実測値です。</p>
+  {% endcall %}
+</div>
 {% endblock %}

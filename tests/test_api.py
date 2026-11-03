@@ -240,7 +240,7 @@ def test_settings_accepts_csrf_header(logged_in_client: TestClient) -> None:
     [
         ({"operation_start": "18:00", "operation_end": "09:00"}, "運用開始時刻は運用終了時刻より前"),
         ({"max_continuous_off_minutes": "200", "max_daily_off_minutes": "100"}, "最大連続OFF時間は"),
-        ({"round_trip_efficiency": "120"}, "ポータブル電源の変換効率"),
+        ({"round_trip_efficiency": "120"}, "変換効率"),
         ({"estimated_average_power_w": "abc"}, "想定平均負荷"),
     ],
 )
@@ -738,3 +738,40 @@ def test_dashboard_shows_battery_not_configured(logged_in_client: TestClient) ->
 
     assert "ポータブル電源" in text and "未設定" in text
     assert "DRY RUN" in text
+
+
+# --- 運用改善（Phase 7） ---
+
+
+def test_refresh_status_buttons(logged_in_client: TestClient) -> None:
+    response = _post(logged_in_client, "/control/refresh/plug")
+    assert "プラグの状態を取得できませんでした" in logged_in_client.get(response.headers["location"]).text
+
+    response = _post(logged_in_client, "/control/refresh/battery")
+    assert "ポータブル電源の状態を取得できませんでした" in logged_in_client.get(response.headers["location"]).text
+
+    assert logged_in_client.post("/control/refresh/plug").status_code == 403
+
+
+def test_history_shows_monthly_summaries(logged_in_client: TestClient, session) -> None:
+    from app.models.schedule import DailySummary
+
+    session.add(DailySummary(
+        summary_date=datetime(2026, 10, 5).date(), off_minutes=120, switch_count=2, schedules_done=1, schedules_aborted=0,
+        schedules_skipped=1, estimated_saving=12.3, battery_used_percent=40, measured_power_w=180.0, failed_operations=0,
+        dry_run=True, updated_at=datetime.now(UTC),
+    ))  # fmt: skip
+    session.commit()
+
+    text = logged_in_client.get("/history?month=2026-10").text
+
+    assert "月別の実績" in text and "10/05" in text and "12.3円" in text and "180W" in text
+    assert logged_in_client.get("/history?month=2026-13").status_code == 200  # 不正な月は今月を表示
+    assert logged_in_client.get("/history?month=abc").status_code == 422
+
+
+def test_settings_are_grouped(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/settings").text
+
+    for title in ("スケジュール", "運用時間", "OFF 時間の制限", "ポータブル電源", "推定節約額"):
+        assert f">{title}</legend>" in text

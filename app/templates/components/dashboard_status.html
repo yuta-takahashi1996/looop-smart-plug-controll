@@ -45,6 +45,10 @@
   <dl class="grid grid-cols-[max-content_1fr] items-center gap-x-4 gap-y-2 text-sm">
     <dt class="text-slate-400">プラグの状態</dt>
     <dd>
+      <form method="post" action="{{ url_for('refresh_status', target='plug') }}" class="float-right">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" title="今すぐ取得" class="ml-1 rounded border border-slate-700 px-1.5 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200">取得</button>
+      </form>
       {% if plug.status %}
       {{ state_badge(plug.status.power) }}
       <span class="text-xs text-slate-500">{{ plug.checked_at|local("%H:%M") }} 確認</span>
@@ -55,6 +59,10 @@
     </dd>
     <dt class="text-slate-400">ポータブル電源</dt>
     <dd>
+      {% if battery.configured %}<form method="post" action="{{ url_for('refresh_status', target='battery') }}" class="float-right">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" title="今すぐ取得" class="ml-1 rounded border border-slate-700 px-1.5 text-[11px] text-slate-400 hover:bg-slate-800 hover:text-slate-200">取得</button>
+      </form>{% endif %}
       {% if battery.percent is not none %}
       <span class="font-semibold tabular-nums {{ 'text-rose-300' if battery.percent <= battery.min_percent + 5 }}">{{ battery.percent }}%</span>
       <span class="text-xs text-slate-400">消費 {{ "%.0f"|format(battery.output_w) }}W・{{ battery.read_at|local("%H:%M") }} 取得</span>

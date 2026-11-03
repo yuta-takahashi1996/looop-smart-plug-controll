@@ -44,6 +44,10 @@
 {% macro saving_text(s) -%}
 <span class="tabular-nums">{{ "%.1f"|format(s.estimated_saving) }}円</span>
 {% if s.executed_saving is not none %}<span class="block text-xs text-slate-400 tabular-nums">実行分 {{ "%.1f"|format(s.executed_saving) }}円</span>{% endif %}
+{% if s.battery_start_percent is not none and s.battery_end_percent is not none %}
+<span class="block text-xs text-slate-400 tabular-nums">残量 {{ s.battery_start_percent }}→{{ s.battery_end_percent }}%（{{ "%+d"|format(s.battery_end_percent - s.battery_start_percent) }}%）</span>
+{% endif %}
+{% if s.measured_power_w is not none %}<span class="block text-xs text-slate-400 tabular-nums">実測 平均{{ "%.0f"|format(s.measured_power_w) }}W</span>{% endif %}
 {%- endmacro %}
 
 {% macro time_range(s) -%}

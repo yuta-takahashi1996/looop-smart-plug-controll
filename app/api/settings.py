@@ -15,22 +15,67 @@ from app.models.forecast import AdjustmentCategory, PriceAdjustment
 from app.models.settings import ControlSettings, load_control_settings, save_control_settings
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
-from app.services import optimizer
+from app.services import maintenance, optimizer
 from app.templating import templates
 
 router = APIRouter()
 
-# 画面に表示する項目（docs/05-web-ui.md §5.7）。(キー, ラベル, 単位, input 属性)
+# 画面に表示する項目（docs/05-web-ui.md §5.7）。グループごとに (キー, ラベル, 単位, input 属性, 説明)
+GROUPS: list[tuple[str, str, list[tuple[str, str, str, dict[str, Any], str]]]] = [
+    (
+        "運用時間",
+        "でんき注意報のスケジュールはこの時間内に限って作ります（でんき警報は残量を取得できる間は時間外も実行します）。",
+        [
+            ("operation_start", "運用開始時刻", "", {"type": "time"}, ""),
+            ("operation_end", "運用終了時刻", "", {"type": "time"}, "この時刻を過ぎると ON に戻します。"),
+        ],
+    ),
+    (
+        "OFF 時間の制限",
+        "蓄電池を使い切らないための上限です。でんき注意報には常に、でんき警報には残量を取得できない間だけ適用します。",
+        [
+            ("max_continuous_off_minutes", "最大連続OFF時間", "分", {"type": "number", "min": 0, "step": 1}, "1回の OFF の上限。"),
+            ("max_daily_off_minutes", "1日の最大OFF時間", "分", {"type": "number", "min": 0, "step": 1}, "警報の OFF も含めた1日の合計の上限。"),
+            (
+                "min_switch_interval_minutes",
+                "最低切り替え間隔",
+                "分",
+                {"type": "number", "min": 0, "step": 1},
+                "短い間隔で ON/OFF を繰り返さないための、スケジュール同士の最小の間隔。",
+            ),
+        ],
+    ),
+    (
+        "ポータブル電源",
+        "残量が下限を下回る前（次の取得時の予測を含む）に ON に戻します。",
+        [
+            ("battery_min_percent", "残量の下限", "%", {"type": "number", "min": 0, "max": 100, "step": 1}, ""),
+            ("battery_capacity_wh", "容量", "Wh", {"type": "number", "min": 1, "step": 1}, "Jackery 1000 New は 1070Wh。"),
+            (
+                "round_trip_efficiency",
+                "変換効率",
+                "%",
+                {"type": "number", "min": 1, "max": 100, "step": 1},
+                "残量の減り方の予測と、推定節約額（充電に必要な電力量）の計算に使います。低いほど安全側です。",
+            ),
+        ],
+    ),
+    (
+        "推定節約額",
+        "画面に表示する推定節約額の計算に使います（制御の判断には使いません）。",
+        [
+            (
+                "estimated_average_power_w",
+                "想定平均負荷",
+                "W",
+                {"type": "number", "min": 0, "step": 1},
+                "OFF 中に蓄電池から給電する家電の平均消費電力。",
+            ),
+        ],
+    ),
+]
 FIELDS: list[tuple[str, str, str, dict[str, Any]]] = [
-    ("operation_start", "運用開始時刻", "", {"type": "time"}),
-    ("operation_end", "運用終了時刻", "", {"type": "time"}),
-    ("round_trip_efficiency", "ポータブル電源の変換効率（節約額の計算・残量の予測に使用）", "%", {"type": "number", "min": 1, "max": 100, "step": 1}),
-    ("max_continuous_off_minutes", "最大連続OFF時間", "分", {"type": "number", "min": 0, "step": 1}),
-    ("max_daily_off_minutes", "1日の最大OFF時間", "分", {"type": "number", "min": 0, "step": 1}),
-    ("min_switch_interval_minutes", "最低切り替え間隔", "分", {"type": "number", "min": 0, "step": 1}),
-    ("estimated_average_power_w", "想定平均負荷", "W", {"type": "number", "min": 0, "step": 1}),
-    ("battery_min_percent", "ポータブル電源の残量の下限", "%", {"type": "number", "min": 0, "max": 100, "step": 1}),
-    ("battery_capacity_wh", "ポータブル電源の容量", "Wh", {"type": "number", "min": 1, "step": 1}),
+    (key, label, unit, attrs) for _, _, fields in GROUPS for key, label, unit, attrs, _ in fields
 ]
 _LABELS = {key: label for key, label, _, _ in FIELDS}
 
@@ -100,7 +145,17 @@ def _render(
     flash_error: str | None = None,
     status_code: int = status.HTTP_200_OK,
 ) -> HTMLResponse:
-    context: dict[str, Any] = {"fields": FIELDS, "values": values, "saved": saved, "errors": errors or []}
+    settings = get_settings()
+    control = load_control_settings(session, settings)
+    context: dict[str, Any] = {
+        "groups": GROUPS,
+        "values": values,
+        "saved": saved,
+        "errors": errors or [],
+        "hints": maintenance.tuning_hints(
+            session, settings, control.battery_capacity_wh, datetime.now(ZoneInfo(settings.tz)).date()
+        ),
+    }
     # HTMX からの送信ではフォーム部分のみ返す
     if request.headers.get("HX-Request"):
         template = "components/settings_form.html"
