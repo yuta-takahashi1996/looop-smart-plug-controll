@@ -34,6 +34,7 @@ class FakeJackery:
         self.requests: list[httpx.Request] = []
         self.login_response: dict = {"code": 0, "msg": "SUCCESS", "token": "TOKEN-1"}
         self.expire_next = False
+        self.expire_code = 10402
         self.logins = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -46,7 +47,7 @@ class FakeJackery:
             return httpx.Response(200, json=body)
         if self.expire_next:
             self.expire_next = False
-            return httpx.Response(200, json={"code": 10402, "msg": "token expired"})
+            return httpx.Response(200, json={"code": self.expire_code, "msg": "token expired"})
         if request.url.path == "/v1/device/bind/list":
             return httpx.Response(200, json={"code": 0, "data": [{"devId": "123", "devName": "Jackery 1000 New"}]})
         if request.url.path == "/v1/device/property":
@@ -97,11 +98,13 @@ def test_device_id_is_stable_per_account() -> None:
     assert first == second
 
 
-def test_relogin_when_token_expired() -> None:
+@pytest.mark.parametrize("code", [10402, 10403])  # トークンの期限切れ／別の場所でのログイン
+def test_relogin_when_token_expired(code: int) -> None:
     fake = FakeJackery()
     client = _client(fake)
     client.list_devices()
     fake.expire_next = True
+    fake.expire_code = code
 
     devices = client.list_devices()
 

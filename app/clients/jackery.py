@@ -28,7 +28,8 @@ from cryptography.hazmat.primitives.serialization import load_der_public_key
 
 BASE_URL = "https://iot.jackeryapp.com"
 SUCCESS = 0
-TOKEN_EXPIRED = 10402
+# ログインし直せば回復するエラー：トークンの期限切れ、別の場所（同じアカウント）でのログイン
+RELOGIN_CODES = (10402, 10403)
 
 # Jackery アプリに埋め込まれているログイン用の RSA 公開鍵
 _LOGIN_PUBLIC_KEY = (
@@ -175,7 +176,8 @@ class JackeryClient:
         if self._token is None:
             self.login()
         body = self._get_once(path, params)
-        if body.get("code") == TOKEN_EXPIRED:
+        if body.get("code") in RELOGIN_CODES:
+            # 同時ログインは1台までのため、取得専用アカウントで別の場所からログインされると無効になる
             self.login()
             body = self._get_once(path, params)
         if body.get("code") != SUCCESS:
