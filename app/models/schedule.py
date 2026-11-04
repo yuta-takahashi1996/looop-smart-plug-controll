@@ -64,7 +64,7 @@ def _charge_mode_column(default: ChargeModeOption) -> Mapped[ChargeModeOption]:
 class ControlSource(enum.StrEnum):
     AUTO = "AUTO"  # スケジュールによる自動制御
     MANUAL = "MANUAL"  # Web UI からの手動操作（Phase 6）
-    SAFETY = "SAFETY"  # 安全制御（起動・終了時の ON 復帰、制限超過など）
+    SAFETY = "SAFETY"  # 安全制御（状態不明時の ON への初期化、制限超過など）
 
 
 class PlugState(enum.StrEnum):

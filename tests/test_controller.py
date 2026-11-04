@@ -402,16 +402,29 @@ def test_schedule_missed_while_stopped_is_skipped(session: Session, control: Con
     assert [log[2] for log in _logs(session)] == ["ON"]
 
 
-def test_shutdown_returns_to_on(session: Session, control: ControlService) -> None:
+def test_shutdown_keeps_plug_and_running_schedule(session: Session) -> None:
+    battery = ChargeBattery()
+    plug = FakePlug("ON")
+    control = _real_control(plug, battery)
     _prepare(session, {range(20, 22): A})
     control.run_cycle(_at(10))
 
     control.shutdown(_at(10, 15))
 
-    assert _logs(session)[-1] == ("SAFETY", "OFF", "ON", "DRY_RUN")
+    assert plug.commands == ["OFF"]  # ON に戻さない
+    assert battery.modes == [ChargeMode.SILENT]  # 充電モードも変えない
+    assert _schedules(session)[0].status == ScheduleStatus.RUNNING
+
+    # 実行中に再起動すると、OFF のまま続きから実行し、終了時に ON・高速充電に戻す
+    restarted = _real_control(plug, battery)
+    restarted.initialize(_at(10, 20))
+    restarted.run_cycle(_at(10, 20))
+    assert plug.commands == ["OFF"]
+    restarted.run_cycle(_at(11))
+    assert plug.commands == ["OFF", "ON"]
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
     s = _schedules(session)[0]
-    assert s.status == ScheduleStatus.ABORTED and s.status_reason == "システムの終了"
-    assert s.executed_end_at == _at(10, 15)
+    assert s.status == ScheduleStatus.DONE and s.executed_end_at == _at(11, 0, 0)
 
 
 def test_control_logs_are_dry_run(session: Session, control: ControlService) -> None:
@@ -526,15 +539,46 @@ def test_real_control_sends_command_and_verifies(session: Session) -> None:
     ]
 
 
-def test_initialization_turns_plug_on(session: Session) -> None:
+def test_startup_keeps_plug_state_during_off_schedule(session: Session) -> None:
+    plug = FakePlug("OFF")
+    control = _real_control(plug)
+    _prepare(session, {range(20, 22): A})
+    s = _schedules(session)[0]
+    s.status, s.executed_start_at = ScheduleStatus.RUNNING, _at(10)
+    session.commit()
+
+    control.initialize(_at(10, 20))  # OFF のスケジュールの実行中に再起動した
+    control.run_cycle(_at(10, 21))
+
+    assert plug.commands == []  # ON に戻さず、OFF のまま続ける
+    assert _results(session) == []
+    assert control.mode == "BATTERY"
+
+
+def test_startup_off_outside_schedule_returns_on_in_first_cycle(session: Session) -> None:
     plug = FakePlug("OFF")
     control = _real_control(plug)
 
     control.initialize(_at(8))
+    assert plug.commands == []
+    control.run_cycle(_at(8, 1))
 
     assert plug.commands == ["ON"]
+    session.expire_all()
     log = session.scalars(select(ControlLog)).one()
-    assert (log.previous_state, log.actual_state, log.result) == (PlugState.OFF, PlugState.ON, ControlResult.SUCCESS)
+    assert (log.source, log.reason, log.result) == (ControlSource.AUTO, "起動時に OFF だったため ON に戻す", ControlResult.SUCCESS)
+
+
+def test_startup_initializes_to_on_when_state_is_unknown(session: Session) -> None:
+    plug = FakePlug("OFF")
+    plug.status_error = True
+    control = _real_control(plug)
+
+    control.initialize(_at(8))
+
+    assert plug.commands and set(plug.commands) == {"ON"}  # 状態を取得できない場合のみ安全側へ
+    log = session.scalars(select(ControlLog)).one()
+    assert (log.source, log.reason) == (ControlSource.SAFETY, "起動時の安全側への初期化")
 
 
 def test_failed_command_is_not_treated_as_success(session: Session) -> None:

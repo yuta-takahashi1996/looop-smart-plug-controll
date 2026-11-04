@@ -254,6 +254,7 @@ class ControlService:
         self._assumed_charge_mode: ChargeMode | None = None
         self.last_charge_change: ChargeModeChange | None = None
         self._charge_failed: tuple[ChargeMode, datetime] | None = None
+        self._startup_state_kept = False  # 起動時に取得した状態を引き継いだ（最初のサイクルの記録の理由に使う）
         self._load_persisted()
 
     # --- 状態 ---
@@ -401,7 +402,25 @@ class ControlService:
         return self._failed is None or self._failed[0] != target or now - self._failed[1] >= RETRY_AFTER
 
     def initialize(self, now: datetime | None = None) -> None:
-        """起動時に安全側（ON）へ初期化する（docs/09 §9.2）。失敗しても Web UI は起動させる。"""
+        """起動時はプラグの状態を取得して引き継ぐ（docs/09 §9.2）。失敗しても Web UI は起動させる。
+
+        状態を取得できれば操作しない（実行中の OFF のスケジュールの途中で再起動しても ON に戻さない。ON・OFF は
+        次の制御サイクルがスケジュールに従って判断する）。取得できない場合のみ安全側（ON）へ初期化する。
+        """
+        if self._switchbot is not None:
+            try:
+                power = PlugState(self._switchbot.get_status().power)
+            except (SwitchBotError, ValueError) as exc:
+                logger.warning("failed to get plug status at startup; initializing to ON: %s", exc)
+            else:
+                with self._lock:
+                    self._state = power
+                    self._startup_state_kept = True
+                    if power == PlugState.OFF and self._control_mode == ControlMode.MANUAL:
+                        # 手動 OFF の継続時間は起動時から数える（残量を取得できない間の制限のため）
+                        self._manual_off_since = self._local(now)
+                logger.info("plug is %s at startup; keeping the current state", power)
+                return
         try:
             with self._session_factory() as session:
                 self.request(session, PlugState.ON, ControlSource.SAFETY, "起動時の安全側への初期化", now=now)
@@ -409,13 +428,13 @@ class ControlService:
             logger.exception("failed to initialize control state; will retry in the next control cycle")
 
     def shutdown(self, now: datetime | None = None) -> None:
-        """終了時に ON へ戻す（docs/09 §9.3）。"""
-        with self._lock, self._session_factory() as session:
-            if self._state != PlugState.ON:
-                self.request(session, PlugState.ON, ControlSource.SAFETY, "終了時の ON 復帰", now=now)
-            local_now = self._local(now)
-            self._abort_running(session, local_now, "システムの終了")
-            self._sync_charge_mode(session, local_now)
+        """終了時はプラグ・充電モードを操作せず、実行中のスケジュールも実行中のまま残す（docs/09 §9.3）。
+
+        再起動時は状態を引き継いで続きから実行する（initialize）。停止中にスケジュールが終了していれば、
+        再起動後の制御サイクルで終了として扱い、ON に戻す・終了時の充電モードに切り替える。
+        """
+        with self._lock:
+            logger.info("shutting down without changing the plug (state=%s)", self._state)
 
     # --- 手動操作（docs/05 §5.8） ---
 
@@ -602,6 +621,7 @@ class ControlService:
                 self._sync_charge_mode(session, now)
 
     def _run_plug_cycle(self, session: Session, now: datetime) -> None:
+        startup, self._startup_state_kept = self._startup_state_kept, False
         if self._state is None and self._should_retry(PlugState.ON, now):
             # 未初期化・状態不明は安全側へ（MANUAL でも ON に戻す。実制御では実機の状態を取得して照合する）
             self.request(session, PlugState.ON, ControlSource.SAFETY, "安全側への初期化", now=now)
@@ -627,7 +647,8 @@ class ControlService:
         )
         if active is None:
             if self._state == PlugState.OFF and self._should_retry(PlugState.ON, now):
-                self.request(session, PlugState.ON, ControlSource.AUTO, "スケジュール終了", now=now)
+                reason = "起動時に OFF だったため ON に戻す" if startup else "スケジュール終了"
+                self.request(session, PlugState.ON, ControlSource.AUTO, reason, now=now)
             return
         if active.target_state == PlugState.ON:
             self._run_on_schedule(session, active, now)
