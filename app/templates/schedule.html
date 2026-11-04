@@ -3,6 +3,13 @@
 
 {% block title %}運転スケジュール | Looop Smart Plug Controller{% endblock %}
 
+{% block head %}
+{% if chart_forecast.slots %}
+<script src="{{ url_for('static', path='js/chart.umd.min.js') }}" defer></script>
+<script src="{{ url_for('static', path='js/forecast.js') }}" defer></script>
+{% endif %}
+{% endblock %}
+
 {# 開始・終了時の充電モードの変更。開始済み（実行中）は終了時のみ変更できる #}
 {% macro charge_form(s, started) -%}
 <details class="group" {{ "open" if error_id == s.id }}>
@@ -180,6 +187,10 @@
   <span class="font-semibold text-slate-200">{{ enabled_minutes }}分</span>（1日の上限 {{ control.max_daily_off_minutes }}分）・推定節約額
   <span class="font-semibold text-slate-200">{{ "%.1f"|format(total_saving) }}円</span>
 </p>
+
+<div class="mb-4">
+  {% include "components/price_chart.html" %}
+</div>
 
 {% call card(None) %}
 {% if schedules %}

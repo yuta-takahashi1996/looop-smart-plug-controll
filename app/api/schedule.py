@@ -1,7 +1,7 @@
 """運転スケジュール画面（docs/05-web-ui.md §5.5）。
 
 でんき予報の注意報・警報から生成した OFF スケジュールと、任意スケジュールから展開した ON／OFF スケジュールを
-表示し、有効・無効の切り替え・時間変更・開始／終了時の充電モードの変更を受け付ける。任意スケジュールのルール（docs/07 §7.9）の登録・変更・削除も行う。
+表示し、有効・無効の切り替え・時間変更・開始／終了時の充電モードの変更を受け付ける。料金グラフ（ダッシュボードと同じもの）も表示する。任意スケジュールのルール（docs/07 §7.9）の登録・変更・削除も行う。
 """
 
 from datetime import date, datetime, time, timedelta
@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import verify_csrf
+from app.api.forecast import chart_context
 from app.config import get_settings
 from app.models.schedule import ChargeModeOption, ControlSchedule, RepeatType, ScheduleRule
 from app.models.settings import load_control_settings
@@ -86,6 +87,7 @@ def _render(
             ),
             "weekday_labels": optimizer.WEEKDAY_LABELS,
             "charge_mode_choices": CHARGE_MODE_CHOICES,
+            **chart_context(request, session, day, page="/schedule"),
         },
         status_code=status_code,
     )

@@ -1045,3 +1045,18 @@ def test_custom_rule_charge_modes_are_expanded(logged_in_client: TestClient, ses
     text = logged_in_client.get("/schedule?day=tomorrow").text
     assert "充電：高速充電 → 変更しない" in text
 
+
+def test_schedule_page_shows_price_chart(logged_in_client: TestClient) -> None:
+    _fetch(logged_in_client)
+
+    text = logged_in_client.get("/schedule?day=tomorrow").text
+
+    assert 'id="forecast-chart"' in text and 'id="forecast-data"' in text
+    assert 'href="/schedule?day=today#price-chart"' in text  # グラフの切り替えは運転スケジュール画面に戻る
+    assert 'name="next" value="/schedule?day=tomorrow"' in text  # 単価の表示切り替え
+    response = logged_in_client.post(
+        "/price-view",
+        data={"view": "billing", "next": "/schedule?day=tomorrow", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+    assert response.headers["location"] == "/schedule?day=tomorrow"

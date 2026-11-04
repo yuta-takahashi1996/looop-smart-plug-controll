@@ -11,7 +11,7 @@ Phase 7（運用改善、[docs/15-roadmap.md](docs/15-roadmap.md)）を実装中
 - スケジュール：`app/services/optimizer.py` がでんき予報の注意報・警報から `control_schedules` を生成する（`plan_day` は DB 非依存の計画、`regenerate` は手動変更・開始済みを残して作り直す、`update_schedule` は手動変更の検証付き更新）。予報の取得後・設定保存時・画面からの再生成で再生成する。
 - 実行：`app/services/controller.py` の `ControlService` が毎分の制御サイクル（`run_cycle`）で有効なスケジュールを実行し、`control_logs` に記録する。手動操作（`manual_power`）・自動制御の停止／再開も同じ経路。実行時の安全判定（OFF 時間の制限・残量の予測）は `app/services/safety.py`、残量の取得は `BatteryMonitor`。
 - 実制御：`DRY_RUN=false` かつ設定画面で「実制御を開始」と入力した場合のみ SwitchBot へ送信する（`set_real_control`、`app/api/control.py`）。送信後は状態を再取得して照合し、照合できなければ成功扱いにしない。テストでは SwitchBot・Jackery を模擬し、実機には送信しない。
-- 画面：すべて実データ。ヘッダーに Dry Run／実制御中を表示する。
+- 画面：すべて実データ。ヘッダーに Dry Run／実制御中を表示する。料金グラフ（`components/price_chart.html`）はダッシュボードと運転スケジュール画面で共用する。
 - 起動・終了時：起動時はプラグの状態を取得して引き継ぎ（取得できない場合のみ ON へ初期化、`ControlService.initialize`）、終了時はプラグを操作しない（`shutdown`、[docs/09-scheduling.md](docs/09-scheduling.md) §9.2・§9.3）。
 - 任意スケジュール（Phase 8、[docs/07-control-logic.md](docs/07-control-logic.md) §7.9）：`schedule_rules` のルール（ON／OFF・1回のみ／毎日／曜日指定）を `optimizer.regenerate` が当日・翌日分の `control_schedules`（`source_level=CUSTOM`）に展開する。予報の有無によらず展開し、でんき予報のスケジュールより優先する。任意 OFF にはでんき注意報と同じ制限を適用する（`validate_rule`・`safety.check_off`）。
 - 充電モード（[docs/07-control-logic.md](docs/07-control-logic.md) §7.10）：Jackery の充電モード（高速充電／静かな充電、`cs`）を MQTT で変更する（`JackeryClient.set_charge_mode`、HTTP で再取得して照合）。MQTT 5 で接続し、接続後15秒待ってから送る（3.1.1 や接続直後の送信はエラーなく破棄されることがある。[docs/08-switchbot-api.md](docs/08-switchbot-api.md) §8.4）。`ControlService._sync_charge_mode` がスケジュールの開始・終了時に、スケジュールごとの設定（`charge_mode_start` / `charge_mode_end`：静かな充電／高速充電／変更しない）へ切り替える。でんき予報のスケジュールは設定画面の既定値、任意スケジュールはルールの値で作り、運転スケジュール画面で個別に変更できる。ダッシュボードから手動でも変更できる。超急速充電（`sfc`）は扱わない。Dry Run 中は送信しない。
