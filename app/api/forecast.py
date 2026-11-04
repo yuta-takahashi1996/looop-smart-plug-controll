@@ -25,7 +25,7 @@ PRICE_VIEW_SESSION_KEY = "price_view"
 PRICE_VIEW_LABELS: dict[str, str] = {"energy": "電源単価", "billing": "請求単価"}
 
 # 表示モードの切り替え・再取得の後に戻ってよいパス
-_RETURN_PATHS = ("/", "/?day=today", "/?day=tomorrow")
+_RETURN_PATHS = ("/", "/?day=today", "/?day=tomorrow", "/schedule?day=today", "/schedule?day=tomorrow")
 
 
 def get_price_view(request: Request) -> PriceView:
@@ -40,8 +40,10 @@ def _safe_return(next_path: str, default: str = "/") -> str:
     return next_path if next_path in _RETURN_PATHS else default
 
 
-def chart_context(request: Request, session: Session, day: Literal["today", "tomorrow"]) -> dict:
-    """ダッシュボードの料金グラフ（docs/05 §5.4）に渡す値。"""
+def chart_context(
+    request: Request, session: Session, day: Literal["today", "tomorrow"], page: Literal["/", "/schedule"] = "/"
+) -> dict:
+    """料金グラフ（docs/05 §5.4）に渡す値。ダッシュボードと運転スケジュール画面（page）で共用する。"""
     settings = get_settings()
     tz = ZoneInfo(settings.tz)
     now = datetime.now(tz)
@@ -64,6 +66,8 @@ def chart_context(request: Request, session: Session, day: Literal["today", "tom
     }
     return {
         "chart_day": day,
+        "chart_page": page,
+        "price_view": view,
         "chart_target": target,
         "chart_forecast": data,
         "chart": chart,

@@ -21,7 +21,15 @@ from sqlalchemy.orm import Session
 from app.clients.jackery import ChargeMode, JackeryClient, JackeryCommandUnconfirmed, JackeryError
 from app.clients.switchbot import PlugStatus, SwitchBotClient, SwitchBotError
 from app.config import Settings
-from app.models.schedule import ControlLog, ControlResult, ControlSchedule, ControlSource, PlugState, ScheduleStatus
+from app.models.schedule import (
+    ChargeModeOption,
+    ControlLog,
+    ControlResult,
+    ControlSchedule,
+    ControlSource,
+    PlugState,
+    ScheduleStatus,
+)
 from app.models.settings import (
     EventCategory,
     EventLevel,
@@ -195,8 +203,11 @@ class ControlMode(StrEnum):
 
 CONTROL_MODE_KEY = "control_mode"
 REAL_CONTROL_KEY = "real_control_enabled"
-# スケジュールの実行中として充電モードを静かな充電にしたか（再起動をまたいで高速充電へ戻すために保持する）
-CHARGE_MODE_SCHEDULE_KEY = "charge_mode_schedule_active"
+# 充電モードの切り替えの対象として扱っている実行中のスケジュールの ID（カンマ区切り）。再起動をまたいで
+# 終了時のモードを設定するために保持する
+CHARGE_MODE_RUNNING_KEY = "charge_mode_running_schedules"
+# 旧形式（実行中かどうかのみ）。移行時に、実行中だった場合は設定の既定値の終了時のモードに戻すために読む
+LEGACY_CHARGE_MODE_SCHEDULE_KEY = "charge_mode_schedule_active"
 
 # コマンド送信後の状態確認（docs/08 §8.3）
 VERIFY_WAIT_SECONDS = 3
@@ -236,11 +247,14 @@ class ControlService:
         self._manual_off_since: datetime | None = None
         self._failed: tuple[PlugState, datetime] | None = None  # 最後に失敗した要求と時刻
         self._sample_start: dict[int, int] = {}  # スケジュールごとの消費電力サンプルの開始位置（実測値の記録用）
-        # 充電モード（docs/07 §7.10）：スケジュールの実行中か、Dry Run の想定のモード、最後の変更、失敗した自動変更
-        self._charge_schedule_active = False
+        # 充電モード（docs/07 §7.10）：切り替えの対象とした実行中のスケジュール、Dry Run の想定のモード、最後の変更、
+        # 失敗した自動変更
+        self._charge_running: set[int] = set()
+        self._charge_legacy_active = False
         self._assumed_charge_mode: ChargeMode | None = None
         self.last_charge_change: ChargeModeChange | None = None
         self._charge_failed: tuple[ChargeMode, datetime] | None = None
+        self._startup_state_kept = False  # 起動時に取得した状態を引き継いだ（最初のサイクルの記録の理由に使う）
         self._load_persisted()
 
     # --- 状態 ---
@@ -250,7 +264,10 @@ class ControlService:
             with self._session_factory() as session:
                 self._control_mode = ControlMode(get_value(session, CONTROL_MODE_KEY) or ControlMode.AUTO)
                 self._real_control_enabled = get_value(session, REAL_CONTROL_KEY) == "true"
-                self._charge_schedule_active = get_value(session, CHARGE_MODE_SCHEDULE_KEY) == "true"
+                running = get_value(session, CHARGE_MODE_RUNNING_KEY)
+                if running is None:
+                    self._charge_legacy_active = get_value(session, LEGACY_CHARGE_MODE_SCHEDULE_KEY) == "true"
+                self._charge_running = {int(i) for i in (running or "").split(",") if i}
         except Exception:
             logger.exception("failed to load control mode; using AUTO / Dry Run")
 
@@ -385,7 +402,25 @@ class ControlService:
         return self._failed is None or self._failed[0] != target or now - self._failed[1] >= RETRY_AFTER
 
     def initialize(self, now: datetime | None = None) -> None:
-        """起動時に安全側（ON）へ初期化する（docs/09 §9.2）。失敗しても Web UI は起動させる。"""
+        """起動時はプラグの状態を取得して引き継ぐ（docs/09 §9.2）。失敗しても Web UI は起動させる。
+
+        状態を取得できれば操作しない（実行中の OFF のスケジュールの途中で再起動しても ON に戻さない。ON・OFF は
+        次の制御サイクルがスケジュールに従って判断する）。取得できない場合のみ安全側（ON）へ初期化する。
+        """
+        if self._switchbot is not None:
+            try:
+                power = PlugState(self._switchbot.get_status().power)
+            except (SwitchBotError, ValueError) as exc:
+                logger.warning("failed to get plug status at startup; initializing to ON: %s", exc)
+            else:
+                with self._lock:
+                    self._state = power
+                    self._startup_state_kept = True
+                    if power == PlugState.OFF and self._control_mode == ControlMode.MANUAL:
+                        # 手動 OFF の継続時間は起動時から数える（残量を取得できない間の制限のため）
+                        self._manual_off_since = self._local(now)
+                logger.info("plug is %s at startup; keeping the current state", power)
+                return
         try:
             with self._session_factory() as session:
                 self.request(session, PlugState.ON, ControlSource.SAFETY, "起動時の安全側への初期化", now=now)
@@ -393,13 +428,13 @@ class ControlService:
             logger.exception("failed to initialize control state; will retry in the next control cycle")
 
     def shutdown(self, now: datetime | None = None) -> None:
-        """終了時に ON へ戻す（docs/09 §9.3）。"""
-        with self._lock, self._session_factory() as session:
-            if self._state != PlugState.ON:
-                self.request(session, PlugState.ON, ControlSource.SAFETY, "終了時の ON 復帰", now=now)
-            local_now = self._local(now)
-            self._abort_running(session, local_now, "システムの終了")
-            self._sync_charge_mode(session, local_now)
+        """終了時はプラグ・充電モードを操作せず、実行中のスケジュールも実行中のまま残す（docs/09 §9.3）。
+
+        再起動時は状態を引き継いで続きから実行する（initialize）。停止中にスケジュールが終了していれば、
+        再起動後の制御サイクルで終了として扱い、ON に戻す・終了時の充電モードに切り替える。
+        """
+        with self._lock:
+            logger.info("shutting down without changing the plug (state=%s)", self._state)
 
     # --- 手動操作（docs/05 §5.8） ---
 
@@ -477,24 +512,46 @@ class ControlService:
             return self._change_charge_mode(session, mode, ControlSource.MANUAL, f"手動操作（{mode.label}）", local_now)
 
     def _sync_charge_mode(self, session: Session, now: datetime) -> None:
-        """スケジュールの開始時に静かな充電、終了時に高速充電へ切り替える。
+        """スケジュールの開始・終了時に、スケジュールごとの設定に従って充電モードを切り替える。
 
-        実行中（RUNNING）のスケジュールの有無の変化で判定する（連続するスケジュールの間では切り替えない）。
+        実行中（RUNNING）になったスケジュールは開始時、実行中でなくなった（終了・中断）スケジュールは終了時の
+        モードを設定する。同じサイクルで終了と開始が重なる場合（連続するスケジュール）は、開始するスケジュールの
+        設定を優先し、「変更しない」の設定は無視する（送信は1回のみ。すでにそのモードなら送らない）。
         充電モードは電源の供給に影響しないため、失敗してもプラグの制御は止めない。
         """
         try:
-            running = any(
-                s.status == ScheduleStatus.RUNNING
+            running = {
+                s.id: s
                 for day in (now.date() - timedelta(days=1), now.date())
                 for s in optimizer.schedules_for(session, day)
-            )
-            if running != self._charge_schedule_active:
-                self._charge_schedule_active = running
-                set_value(session, CHARGE_MODE_SCHEDULE_KEY, "true" if running else "false")
+                if s.status == ScheduleStatus.RUNNING
+            }
+            ended = self._charge_running - running.keys()
+            started = running.keys() - self._charge_running
+            if ended or started or self._charge_legacy_active:
+                modes: list[tuple[ChargeModeOption, str]] = []
+                if self._charge_legacy_active and not running:
+                    # 旧形式で実行中として記録していた（このサイクルまでに終了した）スケジュール
+                    end_mode = load_control_settings(session, self._settings).charge_mode_end
+                    modes.append((end_mode, "スケジュール終了"))
+                for schedule_id in sorted(ended):
+                    schedule = session.get(ControlSchedule, schedule_id)
+                    if schedule is not None:
+                        modes.append((schedule.charge_mode_end, "スケジュール終了"))
+                for schedule in sorted((running[i] for i in started), key=lambda s: s.start_at):
+                    modes.append((schedule.charge_mode_start, "スケジュール開始"))
+                self._charge_running = set(running)
+                self._charge_legacy_active = False
+                set_value(session, CHARGE_MODE_RUNNING_KEY, ",".join(map(str, sorted(running))))
+                target = next(((m, r) for m, r in reversed(modes) if m != ChargeModeOption.KEEP), None)
+                if target is None:
+                    return
+                mode = ChargeMode(target[0].value)
+                if ended and started and mode == self.charge_mode:
+                    return  # 連続するスケジュールの間で、すでに同じモード
                 self._charge_failed = None
                 if self.battery.configured:
-                    mode, reason = (ChargeMode.SILENT, "スケジュール開始") if running else (ChargeMode.FAST, "スケジュール終了")
-                    self._change_charge_mode(session, mode, ControlSource.AUTO, reason, now)
+                    self._change_charge_mode(session, mode, ControlSource.AUTO, target[1], now)
                 return
             if self._charge_failed is not None and now - self._charge_failed[1] >= RETRY_AFTER:
                 mode = self._charge_failed[0]
@@ -564,6 +621,7 @@ class ControlService:
                 self._sync_charge_mode(session, now)
 
     def _run_plug_cycle(self, session: Session, now: datetime) -> None:
+        startup, self._startup_state_kept = self._startup_state_kept, False
         if self._state is None and self._should_retry(PlugState.ON, now):
             # 未初期化・状態不明は安全側へ（MANUAL でも ON に戻す。実制御では実機の状態を取得して照合する）
             self.request(session, PlugState.ON, ControlSource.SAFETY, "安全側への初期化", now=now)
@@ -589,7 +647,8 @@ class ControlService:
         )
         if active is None:
             if self._state == PlugState.OFF and self._should_retry(PlugState.ON, now):
-                self.request(session, PlugState.ON, ControlSource.AUTO, "スケジュール終了", now=now)
+                reason = "起動時に OFF だったため ON に戻す" if startup else "スケジュール終了"
+                self.request(session, PlugState.ON, ControlSource.AUTO, reason, now=now)
             return
         if active.target_state == PlugState.ON:
             self._run_on_schedule(session, active, now)

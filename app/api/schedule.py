@@ -1,7 +1,7 @@
 """運転スケジュール画面（docs/05-web-ui.md §5.5）。
 
 でんき予報の注意報・警報から生成した OFF スケジュールと、任意スケジュールから展開した ON／OFF スケジュールを
-表示し、有効・無効の切り替えと時間変更を受け付ける。任意スケジュールのルール（docs/07 §7.9）の登録・変更・削除も行う。
+表示し、有効・無効の切り替え・時間変更・開始／終了時の充電モードの変更を受け付ける。料金グラフ（ダッシュボードと同じもの）も表示する。任意スケジュールのルール（docs/07 §7.9）の登録・変更・削除も行う。
 """
 
 from datetime import date, datetime, time, timedelta
@@ -14,8 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.auth import verify_csrf
+from app.api.forecast import chart_context
 from app.config import get_settings
-from app.models.schedule import ControlSchedule, RepeatType, ScheduleRule
+from app.models.schedule import ChargeModeOption, ControlSchedule, RepeatType, ScheduleRule
 from app.models.settings import load_control_settings
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
@@ -25,6 +26,8 @@ from app.templating import templates
 router = APIRouter()
 
 Day = Literal["today", "tomorrow"]
+ChargeModeValue = Literal["FAST", "SILENT", "KEEP"]
+CHARGE_MODE_CHOICES = [(option.value, option.label) for option in ChargeModeOption]
 
 
 def _target_day(day: Day) -> tuple[datetime, date]:
@@ -78,8 +81,13 @@ def _render(
             "rules": [(r, _repeat_label(r), _rule_values(r)) for r in rules],
             "rule_form": rule_form,
             "rule_error_id": rule_error_id,
-            "new_rule": rule_form if rule_error_id is None and rule_form is not None else _blank_rule(target),
+            "new_rule": rule_form if rule_error_id is None and rule_form is not None else _blank_rule(
+                target,
+                {"charge_mode_start": control.charge_mode_start.value, "charge_mode_end": control.charge_mode_end.value},
+            ),
             "weekday_labels": optimizer.WEEKDAY_LABELS,
+            "charge_mode_choices": CHARGE_MODE_CHOICES,
+            **chart_context(request, session, day, page="/schedule"),
         },
         status_code=status_code,
     )
@@ -89,13 +97,16 @@ def _render(
 def schedule_page(
     request: Request,
     day: Day = "today",
-    updated: Literal["toggle", "time", "regenerate", "rule_created", "rule_updated", "rule_toggled", "rule_deleted"]
+    updated: Literal[
+        "toggle", "time", "charge_mode", "regenerate", "rule_created", "rule_updated", "rule_toggled", "rule_deleted"
+    ]
     | None = None,
     session: Session = Depends(get_session),
 ) -> HTMLResponse:
     messages = {
         "toggle": "有効・無効を切り替えました。",
         "time": "時間を変更しました。",
+        "charge_mode": "充電モードを変更しました。",
         "regenerate": "スケジュールを再生成しました（手動で変更したものはそのまま残しています）。",
         "rule_created": "任意スケジュールを追加しました。",
         "rule_updated": "任意スケジュールを変更しました。",
@@ -189,6 +200,35 @@ def change_schedule_time(
     return RedirectResponse(f"/schedule?day={day}&updated=time", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.post("/schedule/{schedule_id}/charge-mode", name="change_schedule_charge_mode", dependencies=[Depends(verify_csrf)])
+def change_schedule_charge_mode(
+    request: Request,
+    schedule_id: int,
+    charge_mode_start: Annotated[ChargeModeValue | None, Form()] = None,
+    charge_mode_end: Annotated[ChargeModeValue | None, Form()] = None,
+    session: Session = Depends(get_session),
+) -> Response:
+    """開始・終了時の充電モードの変更（docs/07 §7.10）。開始済みのスケジュールは終了時のみ（フォームで送らない）。"""
+    schedule = _schedule_or_404(session, schedule_id)
+    if schedule is None:
+        return RedirectResponse("/schedule", status_code=status.HTTP_303_SEE_OTHER)
+    day = _day_of(schedule)
+    try:
+        optimizer.update_charge_modes(
+            schedule,
+            start=ChargeModeOption(charge_mode_start) if charge_mode_start else None,
+            end=ChargeModeOption(charge_mode_end) if charge_mode_end else None,
+            now=datetime.now(ZoneInfo(get_settings().tz)),
+            session=session,
+        )
+    except optimizer.ScheduleChangeError as exc:
+        session.rollback()
+        return _render(
+            request, session, day, errors=exc.messages, error_id=schedule_id, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    return RedirectResponse(f"/schedule?day={day}&updated=charge_mode", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/schedule/regenerate", name="regenerate_schedule", dependencies=[Depends(verify_csrf)])
 def regenerate_schedule(
     next: Annotated[str, Form()] = "/schedule", session: Session = Depends(get_session)
@@ -222,11 +262,17 @@ def _rule_values(rule: ScheduleRule) -> dict:
         "weekdays": sorted(rule.weekday_set),
         "start": rule.start_time.strftime("%H:%M"),
         "end": rule.end_time.strftime("%H:%M"),  # 00:00 は 24:00
+        "charge_mode_start": rule.charge_mode_start.value,
+        "charge_mode_end": rule.charge_mode_end.value,
     }
 
 
-def _blank_rule(day: date) -> dict:
+def _blank_rule(day: date, defaults: dict | None = None) -> dict:
+    """新規ルールの初期値。充電モードは設定画面の既定値（defaults）を使う。"""
+    defaults = defaults or {}
     return {
+        "charge_mode_start": defaults.get("charge_mode_start", ChargeModeOption.SILENT.value),
+        "charge_mode_end": defaults.get("charge_mode_end", ChargeModeOption.FAST.value),
         "name": "",
         "target_state": "OFF",
         "repeat_type": RepeatType.ONCE.value,
@@ -271,13 +317,25 @@ def _apply_form(rule: ScheduleRule, values: dict) -> list[str]:
     rule.target_date = target_date
     rule.weekdays = ",".join(map(str, weekdays)) if repeat == RepeatType.WEEKLY else None
     rule.start_time, rule.end_time = start, end
+    rule.charge_mode_start = ChargeModeOption(values["charge_mode_start"])
+    rule.charge_mode_end = ChargeModeOption(values["charge_mode_end"])
     return []
 
 
 def _rule_values_from_form(
-    name: str, target_state: str, repeat_type: str, target_date: str, weekdays: list[str], start: str, end: str
+    name: str,
+    target_state: str,
+    repeat_type: str,
+    target_date: str,
+    weekdays: list[str],
+    start: str,
+    end: str,
+    charge_mode_start: str,
+    charge_mode_end: str,
 ) -> dict:
     return {
+        "charge_mode_start": charge_mode_start,
+        "charge_mode_end": charge_mode_end,
         "name": name,
         "target_state": target_state,
         "repeat_type": repeat_type,
@@ -325,10 +383,14 @@ def create_rule(
     weekdays: Annotated[list[str], Form()] = [],  # noqa: B006
     start: Annotated[str, Form()] = "",
     end: Annotated[str, Form()] = "",
+    charge_mode_start: Annotated[ChargeModeValue, Form()] = "SILENT",
+    charge_mode_end: Annotated[ChargeModeValue, Form()] = "FAST",
     day: Annotated[Day, Form()] = "today",
     session: Session = Depends(get_session),
 ) -> Response:
-    form = _rule_values_from_form(name, target_state, repeat_type, target_date, weekdays, start, end)
+    form = _rule_values_from_form(
+        name, target_state, repeat_type, target_date, weekdays, start, end, charge_mode_start, charge_mode_end
+    )
     return _save_rule(request, session, ScheduleRule(enabled=True), form, day, "rule_created")
 
 
@@ -343,13 +405,17 @@ def update_rule(
     weekdays: Annotated[list[str], Form()] = [],  # noqa: B006
     start: Annotated[str, Form()] = "",
     end: Annotated[str, Form()] = "",
+    charge_mode_start: Annotated[ChargeModeValue, Form()] = "SILENT",
+    charge_mode_end: Annotated[ChargeModeValue, Form()] = "FAST",
     day: Annotated[Day, Form()] = "today",
     session: Session = Depends(get_session),
 ) -> Response:
     rule = session.get(ScheduleRule, rule_id)
     if rule is None:
         return RedirectResponse(f"/schedule?day={day}", status_code=status.HTTP_303_SEE_OTHER)
-    form = _rule_values_from_form(name, target_state, repeat_type, target_date, weekdays, start, end)
+    form = _rule_values_from_form(
+        name, target_state, repeat_type, target_date, weekdays, start, end, charge_mode_start, charge_mode_end
+    )
     return _save_rule(request, session, rule, form, day, "rule_updated")
 
 

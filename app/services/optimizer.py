@@ -6,6 +6,7 @@
   電源単価の高いコマを優先して切り詰める。
 - 最低切り替え間隔：スケジュール同士の間隔は 0（連続）か最低切り替え間隔以上とする。
 手動で変更したスケジュールと、開始済みのスケジュールは再生成で上書きしない。
+開始・終了時の充電モード（docs/07 §7.10）は、でんき予報のスケジュールは設定の既定値、任意スケジュールはルールの値とする。
 
 任意スケジュール（docs/07 §7.9）：ルール（schedule_rules）を当日・翌日分の ON／OFF スケジュールに展開する。
 予報の有無によらず展開し、でんき予報のスケジュールより優先する（予報のスケジュールは任意スケジュールを避けて作る）。
@@ -21,7 +22,15 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models.schedule import ControlSchedule, EnabledBy, RepeatType, ScheduleRule, ScheduleSource
+from app.models.schedule import (
+    ChargeModeOption,
+    ControlSchedule,
+    EnabledBy,
+    RepeatType,
+    ScheduleRule,
+    ScheduleSource,
+    ScheduleStatus,
+)
 from app.models.settings import ControlSettings, load_control_settings
 from app.providers.base import ForecastLevel
 from app.services import forecast as forecast_service
@@ -261,7 +270,8 @@ def regenerate(session: Session, settings: Settings, day: date, now: datetime | 
     tz = ZoneInfo(settings.tz)
     now = now or datetime.now(tz)
     forecast = forecast_service.get_day_forecast(session, settings.looop_area, day, tz)
-    params = PlanParams.from_settings(load_control_settings(session, settings))
+    control = load_control_settings(session, settings)
+    params = PlanParams.from_settings(control)
 
     existing = schedules_for(session, day)
     kept = [s for s in existing if s.manually_modified or s.start_at <= now]
@@ -306,6 +316,8 @@ def regenerate(session: Session, settings: Settings, day: date, now: datetime | 
                     manually_modified=False,
                     reason=describe(forecast.slots, draft),
                     estimated_saving=estimated_saving(forecast.slots, draft.start, draft.end, params),
+                    charge_mode_start=control.charge_mode_start,
+                    charge_mode_end=control.charge_mode_end,
                     updated_at=timestamp,
                 )
             )
@@ -430,6 +442,38 @@ def update_schedule(
     return schedule
 
 
+def update_charge_modes(
+    schedule: ControlSchedule,
+    *,
+    start: ChargeModeOption | None = None,
+    end: ChargeModeOption | None = None,
+    now: datetime,
+    session: Session,
+) -> ControlSchedule:
+    """開始・終了時の充電モードを個別に変更する（docs/07 §7.10）。手動変更済みとし、再生成で上書きしない。
+
+    開始時のモードは開始前のみ、終了時のモードは終了前（実行中を含む）のみ変更できる。
+    """
+    errors = []
+    not_started = schedule.status == ScheduleStatus.PENDING and schedule.start_at > now
+    if start is not None and start != schedule.charge_mode_start and not not_started:
+        errors.append("開始済みのスケジュールの開始時の充電モードは変更できません")
+    if end is not None and end != schedule.charge_mode_end and not (
+        schedule.status in (ScheduleStatus.PENDING, ScheduleStatus.RUNNING) and schedule.end_at > now
+    ):
+        errors.append("終了したスケジュールの充電モードは変更できません")
+    if errors:
+        raise ScheduleChangeError(errors)
+    if start is not None:
+        schedule.charge_mode_start = start
+    if end is not None:
+        schedule.charge_mode_end = end
+    schedule.manually_modified = True
+    schedule.updated_at = datetime.now(UTC)
+    session.commit()
+    return schedule
+
+
 # --- 任意スケジュール（docs/07 §7.9） ---
 
 WEEKDAY_LABELS = "月火水木金土日"
@@ -536,6 +580,8 @@ def _expand_rules(
                 manually_modified=False,
                 reason=reason,
                 estimated_saving=saving,
+                charge_mode_start=rule.charge_mode_start,
+                charge_mode_end=rule.charge_mode_end,
             )
         )
     return created
