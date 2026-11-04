@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # 残量の下限（%）と、残量の減り方の予測に使う容量（docs/07 §7.7）。効率は ROUND_TRIP_EFFICIENCY を共用する
     battery_min_percent: int = Field(default=5, ge=0, le=100)
     battery_capacity_wh: float = Field(default=1070, gt=0)
+    # でんき予報のスケジュールの開始・終了時に設定する充電モード（FAST / SILENT / KEEP。docs/07 §7.10）
+    charge_mode_start: Literal["FAST", "SILENT", "KEEP"] = "SILENT"
+    charge_mode_end: Literal["FAST", "SILENT", "KEEP"] = "FAST"
 
     # Schedule（運用時間・OFF時間の制限、推定節約額の算出に使う値）
     # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）

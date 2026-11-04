@@ -20,6 +20,7 @@ from app.clients.switchbot import (
 )
 from app.config import get_settings
 from app.models.schedule import (
+    ChargeModeOption,
     ControlLog,
     ControlResult,
     ControlSchedule,
@@ -29,13 +30,13 @@ from app.models.schedule import (
     ScheduleRule,
     ScheduleStatus,
 )
-from app.models.settings import EventCategory, SystemEvent, unresolved_events
+from app.models.settings import EventCategory, SystemEvent, set_value, unresolved_events
 from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.repositories.database import SessionLocal
 from app.services import forecast as forecast_service
 from app.services import optimizer
 from app.services import safety
-from app.services.controller import BatteryMonitor, ControlService, PlugMonitor
+from app.services.controller import LEGACY_CHARGE_MODE_SCHEDULE_KEY, BatteryMonitor, ControlService, PlugMonitor
 from tests.conftest import JST
 
 # --- SwitchBot クライアント ---
@@ -804,6 +805,77 @@ def test_charge_mode_is_restored_after_restart(session: Session) -> None:
     restarted.run_cycle(_at(12))
 
     assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+
+
+def _set_charge_modes(session: Session, start: ChargeModeOption, end: ChargeModeOption) -> None:
+    for s in _schedules(session):
+        s.charge_mode_start, s.charge_mode_end = start, end
+    session.commit()
+
+
+def test_charge_mode_follows_each_schedule_setting(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(20, 22): A})
+    _set_charge_modes(session, ChargeModeOption.FAST, ChargeModeOption.SILENT)
+
+    for t in [_at(10), _at(11)]:
+        control.run_cycle(t)
+
+    assert battery.modes == [ChargeMode.FAST, ChargeMode.SILENT]
+
+
+def test_keep_charge_mode_sends_nothing(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(20, 22): A})
+    _set_charge_modes(session, ChargeModeOption.SILENT, ChargeModeOption.KEEP)
+
+    for t in [_at(10), _at(11)]:
+        control.run_cycle(t)
+
+    assert battery.modes == [ChargeMode.SILENT]
+
+
+def test_adjacent_schedules_send_only_the_next_start_mode(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(32, 34): A, range(34, 36): W})
+    first, second = _schedules(session)
+    first.charge_mode_start, first.charge_mode_end = ChargeModeOption.SILENT, ChargeModeOption.FAST
+    second.charge_mode_start, second.charge_mode_end = ChargeModeOption.KEEP, ChargeModeOption.FAST
+    session.commit()
+
+    for t in [_at(16), _at(17)]:
+        control.run_cycle(t)
+    # 次のスケジュールが「変更しない」なら、終了するスケジュールの設定（高速充電）を使う
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+
+
+def test_running_schedule_end_mode_can_be_changed(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(20, 22): A})
+    control.run_cycle(_at(10))
+
+    s = _schedules(session)[0]
+    optimizer.update_charge_modes(s, end=ChargeModeOption.KEEP, now=_at(10, 10), session=session)
+    with pytest.raises(optimizer.ScheduleChangeError, match="開始済み"):
+        optimizer.update_charge_modes(s, start=ChargeModeOption.FAST, now=_at(10, 10), session=session)
+    control.run_cycle(_at(11))
+
+    assert battery.modes == [ChargeMode.SILENT]
+
+
+def test_legacy_running_flag_restores_default_end_mode(session: Session) -> None:
+    set_value(session, LEGACY_CHARGE_MODE_SCHEDULE_KEY, "true")  # 旧形式で実行中として記録していた
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+
+    control.run_cycle(_at(12))
+    control.run_cycle(_at(12, 1))
+
+    assert battery.modes == [ChargeMode.FAST]
 
 
 def test_manual_charge_mode(session: Session) -> None:

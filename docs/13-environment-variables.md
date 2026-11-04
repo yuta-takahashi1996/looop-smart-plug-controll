@@ -35,6 +35,9 @@ JACKERY_DEVICE_ID=
 BATTERY_MIN_PERCENT=5
 # 残量の減り方の予測に使う容量（Wh）
 BATTERY_CAPACITY_WH=1070
+# でんき予報のスケジュールの開始・終了時に設定する充電モード（FAST=高速充電 / SILENT=静かな充電 / KEEP=変更しない）
+CHARGE_MODE_START=SILENT
+CHARGE_MODE_END=FAST
 
 # Schedule
 # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
@@ -83,7 +86,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 
 ## Jackery
 
-`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。`JACKERY_DEVICE_ID` は `uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。
+`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。`JACKERY_DEVICE_ID` は `uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。`CHARGE_MODE_START` / `CHARGE_MODE_END` はでんき予報のスケジュールの開始・終了時に設定する充電モードの既定値で、設定画面からも変更できる（保存した値が優先）。任意スケジュールはルールごとに指定する。
 
 ## `$` を含む値
 

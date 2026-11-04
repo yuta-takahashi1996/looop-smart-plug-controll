@@ -13,6 +13,7 @@ from sqlalchemy import DateTime, Enum, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.config import Settings
+from app.models.schedule import ChargeModeOption
 from app.repositories.database import Base, UTCDateTime
 
 
@@ -37,6 +38,9 @@ class ControlSettings(BaseModel):
     estimated_average_power_w: float = Field(ge=0)
     battery_min_percent: int = Field(ge=0, le=100)
     battery_capacity_wh: float = Field(gt=0)
+    # でんき予報のスケジュールの開始・終了時に設定する充電モードの既定値（docs/07 §7.10）
+    charge_mode_start: ChargeModeOption = ChargeModeOption.SILENT
+    charge_mode_end: ChargeModeOption = ChargeModeOption.FAST
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "ControlSettings":

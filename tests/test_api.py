@@ -37,6 +37,8 @@ VALID_SETTINGS = {
     "estimated_average_power_w": "200",
     "battery_min_percent": "5",
     "battery_capacity_wh": "1070",
+    "charge_mode_start": "SILENT",
+    "charge_mode_end": "FAST",
 }
 
 
@@ -956,3 +958,90 @@ def test_refresh_status_with_htmx_returns_partial(logged_in_client: TestClient) 
     assert "制御情報" in response.text
     assert "取得できませんでした" in response.text and "text-rose-300" in response.text
     assert 'hx-post="http://testserver/control/refresh/plug"' in response.text
+
+
+# --- 充電モードの設定（docs/07 §7.10） ---
+
+
+def test_settings_charge_mode_defaults_apply_to_generated_schedules(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+    assert [(s.charge_mode_start.value, s.charge_mode_end.value) for s in _tomorrow_schedules(session)] == [
+        ("SILENT", "FAST"),
+        ("SILENT", "FAST"),
+    ]
+
+    response = logged_in_client.post(
+        "/settings",
+        data={
+            **VALID_SETTINGS,
+            "operation_start": "09:00",
+            "operation_end": "18:00",
+            "charge_mode_start": "KEEP",
+            "charge_mode_end": "SILENT",
+            "csrf_token": csrf_token(logged_in_client),
+        },
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    assert [(s.charge_mode_start.value, s.charge_mode_end.value) for s in _tomorrow_schedules(session)] == [
+        ("KEEP", "SILENT"),
+        ("KEEP", "SILENT"),
+    ]
+    text = logged_in_client.get("/settings").text
+    assert '<option value="KEEP" selected>変更しない</option>' in text
+
+
+def test_settings_rejects_unknown_charge_mode(logged_in_client: TestClient) -> None:
+    response = logged_in_client.post(
+        "/settings",
+        data={**VALID_SETTINGS, "charge_mode_start": "TURBO", "csrf_token": csrf_token(logged_in_client)},
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 422
+    assert "充電モード（開始時）" in response.text
+
+
+def test_change_schedule_charge_mode(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+    warning = _tomorrow_schedules(session)[1]
+
+    response = logged_in_client.post(
+        f"/schedule/{warning.id}/charge-mode",
+        data={"charge_mode_start": "FAST", "charge_mode_end": "KEEP", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=charge_mode"
+    warning = _tomorrow_schedules(session)[1]
+    assert (warning.charge_mode_start.value, warning.charge_mode_end.value, warning.manually_modified) == ("FAST", "KEEP", True)
+    text = logged_in_client.get(response.headers["location"]).text
+    assert "充電モードを変更しました" in text and "充電：高速充電 → 変更しない" in text
+
+    # 再生成しても手動の変更は残る
+    logged_in_client.post("/schedule/regenerate", data={"csrf_token": csrf_token(logged_in_client)})
+    assert _tomorrow_schedules(session)[1].charge_mode_start.value == "FAST"
+
+
+def test_change_schedule_charge_mode_requires_csrf_and_valid_value(logged_in_client: TestClient, session) -> None:
+    _fetch(logged_in_client)
+    warning = _tomorrow_schedules(session)[1]
+
+    assert logged_in_client.post(f"/schedule/{warning.id}/charge-mode", data={"charge_mode_start": "FAST"}).status_code == 403
+    response = logged_in_client.post(
+        f"/schedule/{warning.id}/charge-mode",
+        data={"charge_mode_start": "TURBO", "csrf_token": csrf_token(logged_in_client)},
+    )
+    assert response.status_code == 422
+
+
+def test_custom_rule_charge_modes_are_expanded(logged_in_client: TestClient, session) -> None:
+    response = _post_rule(logged_in_client, charge_mode_start="FAST", charge_mode_end="KEEP")
+
+    assert response.status_code == 303
+    (schedule,) = _tomorrow_schedules(session)
+    assert (schedule.charge_mode_start.value, schedule.charge_mode_end.value) == ("FAST", "KEEP")
+    text = logged_in_client.get("/schedule?day=tomorrow").text
+    assert "充電：高速充電 → 変更しない" in text
+

@@ -93,7 +93,7 @@
           {% endfor %}
         </span>
       </div>
-      <span class="block text-xs text-slate-500">スケジュールの開始時に静かな充電、終了時に高速充電へ切り替えます（変更には20秒ほどかかります）</span>
+      <span class="block text-xs text-slate-500">スケジュールの開始・終了時に、スケジュールごとの設定（<a href="{{ url_for('schedule') }}" class="underline">運転スケジュール</a>）に従って切り替えます（変更には20秒ほどかかります）</span>
       {% set ch = battery.charge_change %}
       {% if ch and ch.error %}<span class="block text-xs text-rose-300">{{ ch.at|local("%H:%M") }} {{ "静かな充電" if ch.mode == "SILENT" else "高速充電" }}への変更に失敗：{{ ch.error }}</span>{% endif %}
       {% else %}

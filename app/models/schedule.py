@@ -2,7 +2,7 @@
 
 スケジュールはでんき予報の注意報・警報から生成した OFF の予定と、任意スケジュールのルール（schedule_rules、
 docs/10 §10.9）から展開した ON／OFF の予定で、有効（enabled）なものだけを実行する。
-手動で変更（有効・無効の切り替え、時間変更）したものは manually_modified とし、再生成で上書きしない。
+手動で変更（有効・無効の切り替え、時間・充電モードの変更）したものは manually_modified とし、再生成で上書きしない。
 制御履歴は Control Service が行った（Dry Run では行うはずだった）すべての状態変更の記録。
 """
 
@@ -40,6 +40,25 @@ class ScheduleStatus(enum.StrEnum):
     DONE = "DONE"  # 終了時刻まで実行した
     ABORTED = "ABORTED"  # 安全制御で途中で ON に戻した、または開始できなかった
     SKIPPED = "SKIPPED"  # 実行しなかった（無効だった、システムが停止していた）
+
+
+class ChargeModeOption(enum.StrEnum):
+    """スケジュールの開始・終了時に設定するポータブル電源の充電モード（docs/07 §7.10）。"""
+
+    FAST = "FAST"  # 高速充電
+    SILENT = "SILENT"  # 静かな充電
+    KEEP = "KEEP"  # 変更しない
+
+    @property
+    def label(self) -> str:
+        return {"FAST": "高速充電", "SILENT": "静かな充電", "KEEP": "変更しない"}[self.value]
+
+
+# 充電モードの列。既存の行は導入前の動作（開始時に静かな充電、終了時に高速充電）とする
+def _charge_mode_column(default: ChargeModeOption) -> Mapped[ChargeModeOption]:
+    return mapped_column(
+        Enum(ChargeModeOption, native_enum=False, length=8), default=default, server_default=default.value
+    )
 
 
 class ControlSource(enum.StrEnum):
@@ -88,6 +107,9 @@ class ControlSchedule(Base):
     battery_start_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     battery_end_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     measured_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)  # OFF 中の平均消費電力
+    # 開始・終了時に設定する充電モード（でんき予報のスケジュールは設定の既定値、任意スケジュールはルールの値）
+    charge_mode_start: Mapped[ChargeModeOption] = _charge_mode_column(ChargeModeOption.SILENT)
+    charge_mode_end: Mapped[ChargeModeOption] = _charge_mode_column(ChargeModeOption.FAST)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
 
@@ -106,6 +128,9 @@ class ScheduleRule(Base):
     start_time: Mapped[time] = mapped_column(Time)
     end_time: Mapped[time] = mapped_column(Time)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 展開したスケジュールの開始・終了時に設定する充電モード
+    charge_mode_start: Mapped[ChargeModeOption] = _charge_mode_column(ChargeModeOption.SILENT)
+    charge_mode_end: Mapped[ChargeModeOption] = _charge_mode_column(ChargeModeOption.FAST)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
 

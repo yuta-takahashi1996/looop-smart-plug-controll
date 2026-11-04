@@ -25,6 +25,23 @@
     </label>
   </fieldset>
 
+  <fieldset class="rounded-lg border border-slate-800 p-3">
+    <legend class="px-1 text-sm font-semibold text-slate-300">充電モード</legend>
+    <p class="mb-3 text-xs text-slate-500">でんき予報のスケジュールの開始時・終了時に、ポータブル電源の充電モードをこの設定にします。スケジュールごとの変更は運転スケジュール画面で、任意スケジュールはルールごとに設定します。保存すると、手動で変更していない開始前のスケジュールにも反映します。</p>
+    <div class="grid gap-4 sm:grid-cols-2">
+      {% for key, label in charge_mode_fields %}
+      <label class="block text-sm">
+        <span class="text-slate-400">{{ label }}</span>
+        <select name="{{ key }}" class="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none">
+          {% for value, choice in charge_mode_choices %}
+          <option value="{{ value }}" {{ "selected" if values.get(key) == value }}>{{ choice }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endfor %}
+    </div>
+  </fieldset>
+
   {% for title, description, fields in groups %}
   <fieldset class="rounded-lg border border-slate-800 p-3">
     <legend class="px-1 text-sm font-semibold text-slate-300">{{ title }}</legend>

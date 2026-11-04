@@ -3,6 +3,25 @@
 
 {% block title %}運転スケジュール | Looop Smart Plug Controller{% endblock %}
 
+{# 開始・終了時の充電モードの変更。開始済み（実行中）は終了時のみ変更できる #}
+{% macro charge_form(s, started) -%}
+<details class="group" {{ "open" if error_id == s.id }}>
+  <summary class="cursor-pointer list-none whitespace-nowrap rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 [&::-webkit-details-marker]:hidden">充電モード</summary>
+  <form method="post" action="{{ url_for('change_schedule_charge_mode', schedule_id=s.id) }}" class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+    {% for key, label, value in [("charge_mode_start", "開始時", s.charge_mode_start), ("charge_mode_end", "終了時", s.charge_mode_end)] %}
+    <label class="inline-flex items-center gap-1">{{ label }}
+      <select name="{{ key }}" {{ "disabled" if started and key == "charge_mode_start" }}
+              class="rounded border border-slate-700 bg-slate-950 px-1.5 py-1 disabled:opacity-50">
+        {% for v, choice in charge_mode_choices %}<option value="{{ v }}" {{ "selected" if value == v }}>{{ choice }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endfor %}
+    <button type="submit" class="rounded bg-sky-600 px-2 py-1 hover:bg-sky-500">変更</button>
+  </form>
+</details>
+{%- endmacro %}
+
 {% macro actions(s, started) -%}
           {% if not started %}
           <div class="flex flex-wrap items-center gap-2">
@@ -27,7 +46,10 @@
               </form>
             </details>
             {% endif %}
+            {{ charge_form(s, started) }}
           </div>
+          {% elif s.status == "RUNNING" %}
+          {{ charge_form(s, started) }}
           {% else %}
           <span class="text-xs text-slate-500">変更できません</span>
           {% endif %}
@@ -40,6 +62,7 @@
   {{ "手動" if s.enabled_by == "MANUAL" else "自動" }}{% if s.manually_modified %}・手動変更済み{% endif %}{% if started and s.status == "PENDING" %}・開始済み{% endif %}
 </span>
 {% if s.status_reason %}<span class="block text-xs text-amber-300">{{ s.status_reason }}</span>{% endif %}
+<span class="block text-xs text-slate-500">充電：{{ s.charge_mode_start.label }} → {{ s.charge_mode_end.label }}</span>
 {% if s.executed_start_at %}<span class="block text-xs text-slate-500">実行 {{ s.executed_start_at|local("%H:%M") }}〜{{ s.executed_end_at|local("%H:%M") if s.executed_end_at else "" }}</span>{% endif %}
 {%- endmacro %}
 
@@ -104,6 +127,18 @@
     </fieldset>
   </div>
 </div>
+<fieldset class="mt-3">
+  <legend class="text-xs text-slate-400">充電モード（ポータブル電源）</legend>
+  <div class="mt-1 flex flex-wrap gap-4 text-sm">
+    {% for key, label in [("charge_mode_start", "開始時"), ("charge_mode_end", "終了時")] %}
+    <label class="inline-flex items-center gap-1.5">{{ label }}
+      <select name="{{ key }}" class="rounded border border-slate-700 bg-slate-950 px-2 py-1.5">
+        {% for value, choice in charge_mode_choices %}<option value="{{ value }}" {{ "selected" if v[key] == value }}>{{ choice }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endfor %}
+  </div>
+</fieldset>
 <input type="hidden" name="day" value="{{ day }}">
 <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
 {%- endmacro %}
@@ -214,6 +249,7 @@
         {{ schedule_badge({"source_level": "CUSTOM", "target_state": r.target_state}) }}
         <span class="tabular-nums">{{ values.start }}〜{{ "24:00" if values.end == "00:00" else values.end }}</span>
         <span class="text-slate-400">{{ repeat_label }}</span>
+        <span class="text-xs text-slate-500">充電：{{ r.charge_mode_start.label }} → {{ r.charge_mode_end.label }}</span>
         {% if r.enabled %}<span class="font-medium text-emerald-300">有効</span>{% else %}<span class="text-slate-400">無効</span>{% endif %}
       </div>
       <div class="flex flex-wrap items-center gap-2">
@@ -258,6 +294,7 @@
   <p>でんき警報のスケジュールは常に有効、でんき注意報は「自動適用（AUTO_ENABLE）」が{{ "有効" if control.auto_enable else "無効" }}のため{{ "自動で有効" if control.auto_enable else "個別に有効にしない限り実行しません" }}。設定は<a href="{{ url_for('settings') }}" class="underline">設定画面</a>で変更できます。</p>
   <p>時間は30分単位で変更でき、他のスケジュールと重ならず、間隔が0分（連続）か最低切り替え間隔（{{ control.min_switch_interval_minutes }}分）以上である必要があります。でんき注意報は運用時間（{{ control.operation_start.strftime("%H:%M") }}〜{{ control.operation_end.strftime("%H:%M") }}）・最大連続OFF（{{ control.max_continuous_off_minutes }}分）・1日の最大OFF（{{ control.max_daily_off_minutes }}分）の範囲内に限ります。</p>
   <p>手動で変更したスケジュールは、予報の再取得や再生成で上書きされません。</p>
+  <p>充電モードは、スケジュールの開始時・終了時にそれぞれの設定へ切り替えます（「変更しない」は切り替えません）。でんき予報のスケジュールは<a href="{{ url_for('settings') }}" class="underline">設定画面</a>の既定値、任意スケジュールはルールの設定で作ります。開始時は開始前まで、終了時は終了前（実行中を含む）まで個別に変更できます。連続するスケジュールの間では、次のスケジュールの開始時の設定を使います。</p>
   <p>任意スケジュールは、でんき予報のスケジュールより優先します（でんき予報のスケジュールは任意スケジュールと重ならない範囲で作ります）。OFF の任意スケジュールにも、でんき注意報と同じ制限（運用時間・最大連続OFF・1日の最大OFF・最低切り替え間隔）を適用します。今日・明日の分は個別に有効・無効を切り替えられます（時間の変更はルールで行います）。</p>
   <p>有効なスケジュールは1分ごとの制御サイクルで実行します。実行時にも OFF 時間の制限を確認し、到達した場合は途中で ON に戻します（中断）。{% if is_dry_run(request) %}Dry Run 中のため、プラグは操作せず履歴に記録するだけです。{% endif %}</p>
 </div>

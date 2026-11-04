@@ -12,6 +12,7 @@ from app.api.auth import CSRF_FORM_FIELD, verify_csrf
 from app.api.control import REAL_CONTROL_CONFIRMATION
 from app.config import get_settings
 from app.models.forecast import AdjustmentCategory, PriceAdjustment
+from app.models.schedule import ChargeModeOption
 from app.models.settings import ControlSettings, load_control_settings, save_control_settings
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
@@ -74,10 +75,16 @@ GROUPS: list[tuple[str, str, list[tuple[str, str, str, dict[str, Any], str]]]] =
         ],
     ),
 ]
+# 選択肢で入力する項目（テンプレートで個別に表示する）
+CHARGE_MODE_FIELDS = [
+    ("charge_mode_start", "開始時"),
+    ("charge_mode_end", "終了時"),
+]
+CHARGE_MODE_CHOICES = [(option.value, option.label) for option in ChargeModeOption]
 FIELDS: list[tuple[str, str, str, dict[str, Any]]] = [
     (key, label, unit, attrs) for _, _, fields in GROUPS for key, label, unit, attrs, _ in fields
 ]
-_LABELS = {key: label for key, label, _, _ in FIELDS}
+_LABELS = {key: label for key, label, _, _ in FIELDS} | {key: f"充電モード（{label}）" for key, label in CHARGE_MODE_FIELDS}
 
 
 def _to_form_values(data: ControlSettings) -> dict[str, str]:
@@ -93,6 +100,8 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
         "estimated_average_power_w": f"{data.estimated_average_power_w:g}",
         "battery_min_percent": str(data.battery_min_percent),
         "battery_capacity_wh": f"{data.battery_capacity_wh:g}",
+        "charge_mode_start": data.charge_mode_start.value,
+        "charge_mode_end": data.charge_mode_end.value,
     }
 
 
@@ -149,6 +158,8 @@ def _render(
     control = load_control_settings(session, settings)
     context: dict[str, Any] = {
         "groups": GROUPS,
+        "charge_mode_fields": CHARGE_MODE_FIELDS,
+        "charge_mode_choices": CHARGE_MODE_CHOICES,
         "values": values,
         "saved": saved,
         "errors": errors or [],
