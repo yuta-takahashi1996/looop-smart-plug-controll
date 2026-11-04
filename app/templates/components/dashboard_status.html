@@ -68,6 +68,38 @@
       {% if battery.error %}<span class="block text-xs text-rose-300">{{ battery.error }}</span>{% endif %}
       {% if refresh_target == "battery" %}<span class="block text-xs {{ 'text-emerald-300' if refresh_ok else 'text-rose-300' }}" role="status">{{ refresh_message }}</span>{% endif %}
     </dd>
+    <dt class="text-slate-400">充電モード</dt>
+    <dd>
+      {% if battery.configured %}
+      <div class="flex flex-wrap items-center gap-2">
+        {% if battery.charge_mode %}
+        <span class="font-semibold">{{ "静かな充電" if battery.charge_mode == "SILENT" else "高速充電" }}</span>
+        {% if c.dry_run and battery.charge_change and battery.charge_change.result == "DRY_RUN" %}
+        <span class="text-xs text-slate-500">想定（送信していません）</span>
+        {% elif battery.charge_mode_at %}
+        <span class="text-xs text-slate-500">{{ battery.charge_mode_at|local("%H:%M") }} 確認</span>
+        {% endif %}
+        {% else %}
+        <span class="text-xs text-amber-300">未確認</span>
+        {% endif %}
+        <span class="inline-flex gap-1">
+          {% for value, label in [("fast", "高速充電"), ("silent", "静かな充電")] %}
+          {% set current = battery.charge_mode == value|upper %}
+          <form method="post" action="{{ url_for('charge_mode', mode=value) }}" onsubmit="return confirm('充電モードを{{ label }}にしますか？')">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+            <button type="submit" {{ "disabled" if current }} aria-pressed="{{ 'true' if current else 'false' }}"
+                    class="rounded-md border px-2 py-0.5 text-xs {{ 'cursor-default border-sky-700 bg-sky-900/40 text-sky-200' if current else 'border-slate-700 text-slate-300 hover:bg-slate-800' }}">{{ label }}</button>
+          </form>
+          {% endfor %}
+        </span>
+      </div>
+      <span class="block text-xs text-slate-500">スケジュールの開始時に静かな充電、終了時に高速充電へ切り替えます（変更には20秒ほどかかります）</span>
+      {% set ch = battery.charge_change %}
+      {% if ch and ch.error %}<span class="block text-xs text-rose-300">{{ ch.at|local("%H:%M") }} {{ "静かな充電" if ch.mode == "SILENT" else "高速充電" }}への変更に失敗：{{ ch.error }}</span>{% endif %}
+      {% else %}
+      <span class="text-xs text-slate-500">未設定（Jackery のアカウントを設定すると変更できます）</span>
+      {% endif %}
+    </dd>
     <dt class="text-slate-400">システム</dt>
     <dd>{{ state_badge(system_status) }}</dd>
     <dt class="text-slate-400">自動制御</dt>

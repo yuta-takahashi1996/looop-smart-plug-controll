@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.clients import switchbot
+from app.clients.jackery import ChargeMode, JackeryCommandUnconfirmed, JackeryError
 from app.clients.switchbot import (
     SwitchBotAuthError,
     SwitchBotClient,
@@ -28,7 +29,7 @@ from app.models.schedule import (
     ScheduleRule,
     ScheduleStatus,
 )
-from app.models.settings import EventCategory, unresolved_events
+from app.models.settings import EventCategory, SystemEvent, unresolved_events
 from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.repositories.database import SessionLocal
 from app.services import forecast as forecast_service
@@ -681,3 +682,144 @@ def test_measured_values_are_recorded_per_schedule(session: Session) -> None:
     assert s.status == ScheduleStatus.DONE
     assert (s.battery_start_percent, s.battery_end_percent) == (90, 85)
     assert s.measured_power_w == pytest.approx((150 + 170 + 160 + 150) / 4, abs=0.1)
+
+
+# --- 充電モード（docs/07 §7.10）：スケジュールの開始時に静かな充電、終了時に高速充電 ---
+
+
+class ChargeBattery(FakeBattery):
+    """充電モードの変更を記録する模擬。fail に例外を入れると変更に失敗する。"""
+
+    def __init__(self) -> None:
+        super().__init__([(100, 100.0)])
+        self.modes: list[ChargeMode] = []
+        self.fail: JackeryError | None = None
+
+    def set_charge_mode(self, mode: ChargeMode, now: datetime) -> None:
+        self.modes.append(mode)
+        if self.fail is not None:
+            raise self.fail
+        self.charge_mode, self.charge_mode_at = mode, now
+
+
+def _charge_events(session: Session) -> list[str]:
+    session.expire_all()
+    return [
+        e.message
+        for e in session.scalars(
+            select(SystemEvent).where(SystemEvent.category == EventCategory.CHARGE_MODE).order_by(SystemEvent.id)
+        )
+    ]
+
+
+def test_charge_mode_follows_schedule_in_dry_run(session: Session) -> None:
+    battery = ChargeBattery()
+    control = ControlService(get_settings(), SessionLocal, battery=battery)
+    _prepare(session, {range(34, 36): A})
+
+    control.run_cycle(_at(16, 59))
+    control.run_cycle(_at(17))
+    assert control.charge_mode == ChargeMode.SILENT  # Dry Run の想定
+    control.run_cycle(_at(18))
+
+    assert battery.modes == []  # Dry Run では送信しない
+    assert control.charge_mode == ChargeMode.FAST
+    assert _charge_events(session) == [
+        "（Dry Run）充電モードを静かな充電にしました（AUTO：スケジュール開始）",
+        "（Dry Run）充電モードを高速充電にしました（AUTO：スケジュール終了）",
+    ]
+    assert unresolved_events(session) == []  # 変更の記録はお知らせに出さない
+
+
+def test_charge_mode_is_sent_at_schedule_start_and_end(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(32, 34): A, range(34, 36): W})  # 連続するスケジュールの間では切り替えない
+
+    for t in [_at(15, 59), _at(16), _at(16, 30), _at(17), _at(18)]:
+        control.run_cycle(t)
+
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+    assert control.last_charge_change is not None
+    assert control.last_charge_change.result == ControlResult.SUCCESS
+
+
+def test_custom_on_schedule_also_switches_charge_mode(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _custom_rule(session, "ON", 10, 11)
+
+    for t in [_at(9, 59), _at(10), _at(11)]:
+        control.run_cycle(t)
+
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+
+
+def test_aborted_schedule_returns_charge_mode_to_fast(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))
+    control.stop_auto(_at(10, 30))
+
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+
+
+def test_charge_mode_failure_does_not_stop_plug_control_and_is_retried(session: Session) -> None:
+    battery = ChargeBattery()
+    battery.fail = JackeryCommandUnconfirmed("充電モードが静かな充電になりませんでした（現在：高速充電）")
+    plug = FakePlug("ON")
+    control = _real_control(plug, battery)
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))
+
+    assert plug.commands == ["OFF"]  # プラグの制御は続ける
+    assert control.last_charge_change is not None and control.last_charge_change.result == ControlResult.UNCONFIRMED
+    assert [e.category for e in unresolved_events(session)] == [EventCategory.CHARGE_MODE]
+
+    control.run_cycle(_at(10, 2))  # 5分間は再試行しない
+    assert battery.modes == [ChargeMode.SILENT]
+    control.run_cycle(_at(10, 5, 10))  # 再試行も失敗（エラーは記録し直さない）
+    assert battery.modes == [ChargeMode.SILENT] * 2
+    assert len(unresolved_events(session)) == 1
+
+    battery.fail = None
+    control.run_cycle(_at(10, 11))
+    assert battery.modes == [ChargeMode.SILENT] * 3
+    session.expire_all()
+    assert unresolved_events(session) == []
+
+
+def test_charge_mode_is_restored_after_restart(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(20, 22): A})
+    control.run_cycle(_at(10))
+    assert battery.modes == [ChargeMode.SILENT]
+
+    # スケジュールの実行中に停止し、終了後に再起動した
+    restarted = _real_control(FakePlug("ON"), battery)
+    restarted.run_cycle(_at(12))
+
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+
+
+def test_manual_charge_mode(session: Session) -> None:
+    battery = ChargeBattery()
+    control = _real_control(FakePlug("ON"), battery)
+
+    change = control.manual_charge_mode(ChargeMode.SILENT, _at(9))
+
+    assert battery.modes == [ChargeMode.SILENT]
+    assert (change.source, change.result) == (ControlSource.MANUAL, ControlResult.SUCCESS)
+    assert control.control_mode == "AUTO"  # プラグの制御モードは変えない
+    assert _charge_events(session) == ["充電モードを静かな充電にしました（MANUAL：手動操作（静かな充電））"]
+
+
+def test_manual_charge_mode_requires_jackery(session: Session) -> None:
+    control = ControlService(get_settings(), SessionLocal)
+
+    with pytest.raises(ValueError, match="Jackery"):
+        control.manual_charge_mode(ChargeMode.SILENT)

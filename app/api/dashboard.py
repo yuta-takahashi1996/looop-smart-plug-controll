@@ -17,7 +17,7 @@ from app.providers.base import ForecastLevel
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
 from app.services import optimizer, safety
-from app.services.controller import PlugSnapshot
+from app.services.controller import ChargeModeChange, PlugSnapshot
 from app.templating import templates
 
 router = APIRouter()
@@ -140,6 +140,9 @@ def _control_summary(request: Request, session: Session, settings: Settings, now
 @dataclass(frozen=True)
 class BatterySummary:
     configured: bool
+    charge_mode: str | None  # 充電モード（FAST / SILENT。Dry Run では想定のモード）
+    charge_mode_at: datetime | None  # 実機で最後に確認した時刻
+    charge_change: ChargeModeChange | None
     percent: int | None
     output_w: float | None
     read_at: datetime | None
@@ -159,6 +162,9 @@ def _battery_summary(request: Request, session: Session, settings: Settings, now
         eta = safety.time_to_min_percent(reading, power, limits)
     return BatterySummary(
         configured=battery.configured,
+        charge_mode=control.charge_mode.value if control.charge_mode else None,
+        charge_mode_at=battery.charge_mode_at,
+        charge_change=control.last_charge_change,
         percent=reading.percent if reading else None,
         output_w=reading.output_w if reading else None,
         read_at=reading.at if reading else None,

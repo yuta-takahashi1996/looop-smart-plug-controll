@@ -4,7 +4,7 @@
 Dry Run では SwitchBot へのコマンドを送信せず「実行するはずだった操作」を記録する。実制御は DRY_RUN=false
 かつ画面で有効にした場合のみ行う（docs/14 §14.3）。PlugMonitor はプラグ状態の読み取りのみを行い、画面は
 SwitchBot API を直接呼ばずに最後の確認結果を参照する（docs/05 §5.9）。BatteryMonitor はポータブル電源の
-残量を取得する（docs/07 §7.7）。
+残量の取得と充電モードの変更を行う（docs/07 §7.7・§7.10）。
 """
 
 import logging
@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.clients.jackery import JackeryClient, JackeryError
+from app.clients.jackery import ChargeMode, JackeryClient, JackeryCommandUnconfirmed, JackeryError
 from app.clients.switchbot import PlugStatus, SwitchBotClient, SwitchBotError
 from app.config import Settings
 from app.models.schedule import ControlLog, ControlResult, ControlSchedule, ControlSource, PlugState, ScheduleStatus
@@ -111,6 +111,9 @@ class BatteryMonitor:
         self.last: safety.BatteryReading | None = None
         self.last_error: str | None = None
         self.samples: list[float] = []
+        # 最後に確認した充電モード（cs が高速充電・静かな充電以外なら None）と確認時刻
+        self.charge_mode: ChargeMode | None = None
+        self.charge_mode_at: datetime | None = None
 
     @property
     def configured(self) -> bool:
@@ -132,8 +135,7 @@ class BatteryMonitor:
             return None
         assert self._client is not None
         try:
-            device_id = self._device_id or str(self._client.list_devices()[0].get("devId"))
-            status = self._client.get_status(device_id)
+            status = self._client.get_status(self._resolve_device_id())
             if status.remaining_percent is None or status.output_power_w is None:
                 raise JackeryError("残量または消費電力を取得できませんでした")
         except (JackeryError, IndexError) as exc:
@@ -149,10 +151,41 @@ class BatteryMonitor:
         with self._lock:
             self.last, self.last_error = reading, None
             self.samples.append(status.output_power_w)
+            self.charge_mode, self.charge_mode_at = status.charge_mode, now
         if had_error:
             with self._session_factory() as session:
                 resolve_events(session, EventCategory.BATTERY)
         return reading
+
+    def _resolve_device_id(self) -> str:
+        assert self._client is not None
+        if self._device_id:
+            return self._device_id
+        devices = self._client.list_devices()
+        if not devices:
+            raise JackeryError("共有されたポータブル電源が見つかりません")
+        return str(devices[0].get("devId"))
+
+    def set_charge_mode(self, mode: ChargeMode, now: datetime) -> None:
+        """充電モードを変更する（照合できなければ JackeryError）。呼び出しは ControlService から。"""
+        if not self.configured:
+            raise JackeryError("Jackery のアカウントが未設定です")
+        assert self._client is not None
+        status = self._client.set_charge_mode(self._resolve_device_id(), mode)
+        with self._lock:
+            self.charge_mode, self.charge_mode_at = status.charge_mode, now
+
+
+@dataclass(frozen=True)
+class ChargeModeChange:
+    """充電モードの変更の結果（画面表示用。履歴は system_events に残す）。"""
+
+    mode: ChargeMode
+    source: ControlSource
+    reason: str
+    result: ControlResult
+    at: datetime
+    error: str | None = None
 
 
 class ControlMode(StrEnum):
@@ -162,6 +195,8 @@ class ControlMode(StrEnum):
 
 CONTROL_MODE_KEY = "control_mode"
 REAL_CONTROL_KEY = "real_control_enabled"
+# スケジュールの実行中として充電モードを静かな充電にしたか（再起動をまたいで高速充電へ戻すために保持する）
+CHARGE_MODE_SCHEDULE_KEY = "charge_mode_schedule_active"
 
 # コマンド送信後の状態確認（docs/08 §8.3）
 VERIFY_WAIT_SECONDS = 3
@@ -201,6 +236,11 @@ class ControlService:
         self._manual_off_since: datetime | None = None
         self._failed: tuple[PlugState, datetime] | None = None  # 最後に失敗した要求と時刻
         self._sample_start: dict[int, int] = {}  # スケジュールごとの消費電力サンプルの開始位置（実測値の記録用）
+        # 充電モード（docs/07 §7.10）：スケジュールの実行中か、Dry Run の想定のモード、最後の変更、失敗した自動変更
+        self._charge_schedule_active = False
+        self._assumed_charge_mode: ChargeMode | None = None
+        self.last_charge_change: ChargeModeChange | None = None
+        self._charge_failed: tuple[ChargeMode, datetime] | None = None
         self._load_persisted()
 
     # --- 状態 ---
@@ -210,6 +250,7 @@ class ControlService:
             with self._session_factory() as session:
                 self._control_mode = ControlMode(get_value(session, CONTROL_MODE_KEY) or ControlMode.AUTO)
                 self._real_control_enabled = get_value(session, REAL_CONTROL_KEY) == "true"
+                self._charge_schedule_active = get_value(session, CHARGE_MODE_SCHEDULE_KEY) == "true"
         except Exception:
             logger.exception("failed to load control mode; using AUTO / Dry Run")
 
@@ -238,6 +279,13 @@ class ControlService:
         if self._state is None:
             return "SAFE"
         return "BATTERY" if self._state == PlugState.OFF else "GRID"
+
+    @property
+    def charge_mode(self) -> ChargeMode | None:
+        """表示用の充電モード。Dry Run では変更した想定のモード（未変更なら最後に確認したモード）。"""
+        if self.dry_run and self._assumed_charge_mode is not None:
+            return self._assumed_charge_mode
+        return self.battery.charge_mode
 
     def set_real_control(self, enabled: bool) -> None:
         """実制御の有効・無効（画面での確認操作から呼ぶ）。有効にできない環境では何もしない。"""
@@ -351,6 +399,7 @@ class ControlService:
                 self.request(session, PlugState.ON, ControlSource.SAFETY, "終了時の ON 復帰", now=now)
             local_now = self._local(now)
             self._abort_running(session, local_now, "システムの終了")
+            self._sync_charge_mode(session, local_now)
 
     # --- 手動操作（docs/05 §5.8） ---
 
@@ -366,6 +415,7 @@ class ControlService:
                     raise ValueError(decision.reason)
             log = self.request(session, target, ControlSource.MANUAL, f"手動操作（{target}）", now=local_now)
             self._manual_off_since = local_now if self._state == PlugState.OFF else None
+            self._sync_charge_mode(session, local_now)
             return log
 
     def stop_auto(self, now: datetime | None = None) -> None:
@@ -375,6 +425,7 @@ class ControlService:
             self._set_mode(session, ControlMode.MANUAL)
             self._abort_running(session, local_now, "自動制御の停止")
             self._manual_off_since = local_now if self._state == PlugState.OFF else None
+            self._sync_charge_mode(session, local_now)
 
     def start_auto(self) -> None:
         """自動制御を再開する（MANUAL → SAFE。次の制御サイクルでスケジュールに従う）。"""
@@ -414,67 +465,157 @@ class ControlService:
             return self.battery.read(now) or last
         return last
 
+    # --- 充電モード（docs/07 §7.10） ---
+
+    def manual_charge_mode(self, mode: ChargeMode, now: datetime | None = None) -> ChargeModeChange:
+        """画面から充電モードを変更する。プラグの制御モード（AUTO/MANUAL）は変えない。"""
+        local_now = self._local(now)
+        with self._lock, self._session_factory() as session:
+            if not self.battery.configured:
+                raise ValueError("Jackery のアカウントが未設定のため、充電モードを変更できません")
+            self._charge_failed = None  # 手動の変更を優先し、失敗した自動変更は再試行しない
+            return self._change_charge_mode(session, mode, ControlSource.MANUAL, f"手動操作（{mode.label}）", local_now)
+
+    def _sync_charge_mode(self, session: Session, now: datetime) -> None:
+        """スケジュールの開始時に静かな充電、終了時に高速充電へ切り替える。
+
+        実行中（RUNNING）のスケジュールの有無の変化で判定する（連続するスケジュールの間では切り替えない）。
+        充電モードは電源の供給に影響しないため、失敗してもプラグの制御は止めない。
+        """
+        try:
+            running = any(
+                s.status == ScheduleStatus.RUNNING
+                for day in (now.date() - timedelta(days=1), now.date())
+                for s in optimizer.schedules_for(session, day)
+            )
+            if running != self._charge_schedule_active:
+                self._charge_schedule_active = running
+                set_value(session, CHARGE_MODE_SCHEDULE_KEY, "true" if running else "false")
+                self._charge_failed = None
+                if self.battery.configured:
+                    mode, reason = (ChargeMode.SILENT, "スケジュール開始") if running else (ChargeMode.FAST, "スケジュール終了")
+                    self._change_charge_mode(session, mode, ControlSource.AUTO, reason, now)
+                return
+            if self._charge_failed is not None and now - self._charge_failed[1] >= RETRY_AFTER:
+                mode = self._charge_failed[0]
+                self._change_charge_mode(session, mode, ControlSource.AUTO, f"充電モード（{mode.label}）の再試行", now)
+        except Exception:
+            logger.exception("failed to sync charge mode")
+
+    def _change_charge_mode(
+        self, session: Session, mode: ChargeMode, source: ControlSource, reason: str, now: datetime
+    ) -> ChargeModeChange:
+        """充電モードを変更し、結果を system_events に記録する。Dry Run では送信しない。"""
+        error: str | None = None
+        if self.dry_run:
+            result = ControlResult.DRY_RUN
+            self._assumed_charge_mode = mode
+        else:
+            self._assumed_charge_mode = None
+            try:
+                self.battery.set_charge_mode(mode, now)
+                result = ControlResult.SUCCESS
+            except JackeryCommandUnconfirmed as exc:
+                result, error = ControlResult.UNCONFIRMED, str(exc)
+            except JackeryError as exc:
+                result, error = ControlResult.FAILED, str(exc)
+
+        change = ChargeModeChange(mode, source, reason, result, now, error)
+        self.last_charge_change = change
+        if error is not None:
+            logger.warning("charge mode -> %s failed (%s: %s): %s", mode, source, reason, error)
+            # 同じ要求の再試行の失敗は記録し直さない
+            first_failure = self._charge_failed is None or self._charge_failed[0] != mode
+            if source == ControlSource.AUTO:
+                self._charge_failed = (mode, now)
+            if first_failure or source != ControlSource.AUTO:
+                record_event(
+                    session, EventLevel.ERROR, EventCategory.CHARGE_MODE, f"充電モードを{mode.label}にできませんでした：{error}"
+                )
+            return change
+
+        self._charge_failed = None
+        resolve_events(session, EventCategory.CHARGE_MODE)
+        prefix = "（Dry Run）" if result == ControlResult.DRY_RUN else ""
+        # 変更の記録として残す（エラーではないため解決済みにして、ダッシュボードのお知らせには出さない）
+        event = record_event(
+            session, EventLevel.INFO, EventCategory.CHARGE_MODE, f"{prefix}充電モードを{mode.label}にしました（{source}：{reason}）"
+        )
+        event.resolved_at = event.occurred_at
+        session.commit()
+        logger.info("%s charge mode -> %s (%s: %s)", "[dry-run]" if result == ControlResult.DRY_RUN else "[real]", mode, source, reason)
+        return change
+
     # --- 制御サイクル（docs/07 §7.8） ---
 
     def _local(self, now: datetime | None) -> datetime:
         return (now or datetime.now(UTC)).astimezone(self._tz)
 
     def run_cycle(self, now: datetime | None = None) -> None:
-        """毎分実行する。AUTO では有効なスケジュールの間は OFF、それ以外は ON。MANUAL では安全制御のみ。"""
+        """毎分実行する。AUTO では有効なスケジュールの間は OFF、それ以外は ON。MANUAL では安全制御のみ。
+
+        プラグの制御のあとに、スケジュールの開始・終了に合わせて充電モードを切り替える。
+        """
         now = self._local(now)
         with self._lock, self._session_factory() as session:
-            if self._state is None and self._should_retry(PlugState.ON, now):
-                # 未初期化・状態不明は安全側へ（MANUAL でも ON に戻す。実制御では実機の状態を取得して照合する）
-                self.request(session, PlugState.ON, ControlSource.SAFETY, "安全側への初期化", now=now)
-            if self._state is None:
-                # ON を確認できない間は OFF を要求しない（終了したスケジュールの後処理のみ行う）
-                self._close_ended(session, now, optimizer.schedules_for(session, now.date()))
-                return
+            try:
+                self._run_plug_cycle(session, now)
+            finally:
+                self._sync_charge_mode(session, now)
 
-            schedules = optimizer.schedules_for(session, now.date())
-            self._close_ended(session, now, schedules)
+    def _run_plug_cycle(self, session: Session, now: datetime) -> None:
+        if self._state is None and self._should_retry(PlugState.ON, now):
+            # 未初期化・状態不明は安全側へ（MANUAL でも ON に戻す。実制御では実機の状態を取得して照合する）
+            self.request(session, PlugState.ON, ControlSource.SAFETY, "安全側への初期化", now=now)
+        if self._state is None:
+            # ON を確認できない間は OFF を要求しない（終了したスケジュールの後処理のみ行う）
+            self._close_ended(session, now, optimizer.schedules_for(session, now.date()))
+            return
 
-            if self._control_mode == ControlMode.MANUAL:
-                self._run_manual_safety(session, now)
-                return
+        schedules = optimizer.schedules_for(session, now.date())
+        self._close_ended(session, now, schedules)
 
-            active = next(
-                (
-                    s
-                    for s in schedules
-                    if s.enabled and s.start_at <= now < s.end_at and s.status in (ScheduleStatus.PENDING, ScheduleStatus.RUNNING)
-                ),
-                None,
-            )
-            if active is None:
-                if self._state == PlugState.OFF and self._should_retry(PlugState.ON, now):
-                    self.request(session, PlugState.ON, ControlSource.AUTO, "スケジュール終了", now=now)
-                return
-            if active.target_state == PlugState.ON:
-                self._run_on_schedule(session, active, now)
-                return
+        if self._control_mode == ControlMode.MANUAL:
+            self._run_manual_safety(session, now)
+            return
 
-            decision = self._check_schedule(session, active, schedules, now)
-            if decision.allowed:
-                if active.status == ScheduleStatus.PENDING:
-                    active.status = ScheduleStatus.RUNNING
-                    active.executed_start_at = now
-                    reading = self.battery.last
-                    active.battery_start_percent = reading.percent if safety.battery_known(reading, now) else None  # type: ignore[union-attr]
-                    session.commit()
-                if self._state != PlugState.OFF and self._should_retry(PlugState.OFF, now):
-                    self.request(session, PlugState.OFF, ControlSource.AUTO, active.reason, schedule_id=active.id, now=now)
-                self._sample_start.setdefault(active.id, max(0, len(self.battery.samples) - 1))
-                return
-            # 安全制御で開始・継続できない
-            if self._state != PlugState.ON and self._should_retry(PlugState.ON, now):
-                self.request(session, PlugState.ON, ControlSource.SAFETY, decision.reason or "", schedule_id=active.id, now=now)
-            if active.status == ScheduleStatus.RUNNING:
-                self._finish(session, active, now, ScheduleStatus.ABORTED, decision.reason)
-            else:
-                active.status = ScheduleStatus.ABORTED
-                active.status_reason = decision.reason
+        active = next(
+            (
+                s
+                for s in schedules
+                if s.enabled and s.start_at <= now < s.end_at and s.status in (ScheduleStatus.PENDING, ScheduleStatus.RUNNING)
+            ),
+            None,
+        )
+        if active is None:
+            if self._state == PlugState.OFF and self._should_retry(PlugState.ON, now):
+                self.request(session, PlugState.ON, ControlSource.AUTO, "スケジュール終了", now=now)
+            return
+        if active.target_state == PlugState.ON:
+            self._run_on_schedule(session, active, now)
+            return
+
+        decision = self._check_schedule(session, active, schedules, now)
+        if decision.allowed:
+            if active.status == ScheduleStatus.PENDING:
+                active.status = ScheduleStatus.RUNNING
+                active.executed_start_at = now
+                reading = self.battery.last
+                active.battery_start_percent = reading.percent if safety.battery_known(reading, now) else None  # type: ignore[union-attr]
                 session.commit()
+            if self._state != PlugState.OFF and self._should_retry(PlugState.OFF, now):
+                self.request(session, PlugState.OFF, ControlSource.AUTO, active.reason, schedule_id=active.id, now=now)
+            self._sample_start.setdefault(active.id, max(0, len(self.battery.samples) - 1))
+            return
+        # 安全制御で開始・継続できない
+        if self._state != PlugState.ON and self._should_retry(PlugState.ON, now):
+            self.request(session, PlugState.ON, ControlSource.SAFETY, decision.reason or "", schedule_id=active.id, now=now)
+        if active.status == ScheduleStatus.RUNNING:
+            self._finish(session, active, now, ScheduleStatus.ABORTED, decision.reason)
+        else:
+            active.status = ScheduleStatus.ABORTED
+            active.status_reason = decision.reason
+            session.commit()
 
     def _run_on_schedule(self, session: Session, schedule: ControlSchedule, now: datetime) -> None:
         """任意 ON のスケジュール（docs/07 §7.9）：OFF を要求せず、OFF 中なら ON に戻す。安全側のため判定は不要。"""
