@@ -12,7 +12,9 @@ from app.models.forecast import PriceAdjustment
 from app.models.schedule import ControlLog, ControlSchedule, ScheduleRule
 from app.models.settings import SystemEvent
 from app.providers.base import ForecastFetchError, Notice
-from app.services.controller import PlugSnapshot
+from app.clients.jackery import ChargeMode
+from app.repositories.database import SessionLocal
+from app.services.controller import BatteryMonitor, PlugSnapshot
 from app.services.forecast import check_price_notices
 from tests.conftest import JST, TEST_PASSWORD, FakeProvider, csrf_token
 
@@ -863,6 +865,47 @@ def test_dashboard_shows_battery_not_configured(logged_in_client: TestClient) ->
 
     assert "ポータブル電源" in text and "未設定" in text
     assert "DRY RUN" in text
+
+
+class _ConfiguredBattery(BatteryMonitor):
+    """設定済みの Jackery（Dry Run のため実機には送信しない）。"""
+
+    def __init__(self) -> None:
+        super().__init__(None, "", SessionLocal)
+        self.charge_mode = ChargeMode.FAST
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    def set_charge_mode(self, mode: ChargeMode, now: datetime) -> None:
+        raise AssertionError("Dry Run では送信しない")
+
+
+def test_charge_mode_buttons_on_dashboard(logged_in_client: TestClient) -> None:
+    app.state.control.battery = _ConfiguredBattery()
+    text = logged_in_client.get("/").text
+
+    assert "充電モード" in text
+    assert '/control/charge-mode/fast"' in text and '/control/charge-mode/silent"' in text
+    assert "超急速" not in text  # 超急速充電は扱わない
+
+    response = _post(logged_in_client, "/control/charge-mode/silent")
+
+    text = logged_in_client.get(response.headers["location"]).text
+    assert "充電モードを静かな充電にしました（Dry Run：コマンドは送信していません）" in text
+    assert app.state.control.charge_mode == ChargeMode.SILENT
+    assert app.state.control.control_mode == "AUTO"
+
+
+def test_charge_mode_requires_jackery_and_csrf(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/").text
+    assert '/control/charge-mode/silent"' not in text  # 未設定ならボタンを出さない
+
+    response = _post(logged_in_client, "/control/charge-mode/silent")
+    assert "充電モードを変更できません" in logged_in_client.get(response.headers["location"]).text
+    assert logged_in_client.post("/control/charge-mode/silent").status_code == 403
+    assert _post(logged_in_client, "/control/charge-mode/turbo").status_code == 422
 
 
 # --- 運用改善（Phase 7） ---

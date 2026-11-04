@@ -90,7 +90,7 @@
 | id | 主キー |
 | occurred_at | 発生日時 |
 | level | INFO / WARNING / ERROR |
-| category | FORECAST（予報取得・検証）/ SWITCHBOT（通信・コマンドの失敗）/ BATTERY（ポータブル電源の残量取得）/ PRICE_NOTICE（単価に関わるお知らせ） |
+| category | FORECAST（予報取得・検証）/ SWITCHBOT（通信・コマンドの失敗）/ BATTERY（ポータブル電源の残量取得）/ CHARGE_MODE（充電モードの変更）/ PRICE_NOTICE（単価に関わるお知らせ） |
 | message | 内容 |
 | reference | 重複検知用のキー（お知らせのURLなど） |
 | resolved_at | 解決日時（未解決は NULL） |

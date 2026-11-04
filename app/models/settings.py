@@ -85,6 +85,7 @@ class EventCategory(enum.StrEnum):
     FORECAST = "FORECAST"  # 料金予報の取得・検証
     SWITCHBOT = "SWITCHBOT"  # SwitchBot API との通信・コマンドの失敗
     BATTERY = "BATTERY"  # ポータブル電源（Jackery）の残量取得
+    CHARGE_MODE = "CHARGE_MODE"  # ポータブル電源（Jackery）の充電モードの変更
     PRICE_NOTICE = "PRICE_NOTICE"  # 単価に関わる Looop のお知らせ（加算額の確認が必要）
 
 

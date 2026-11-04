@@ -83,7 +83,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 
 ## Jackery
 
-`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。`JACKERY_DEVICE_ID` は `uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。
+`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。`JACKERY_DEVICE_ID` は `uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。
 
 ## `$` を含む値
 

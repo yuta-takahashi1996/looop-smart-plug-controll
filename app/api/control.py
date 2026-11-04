@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.api.auth import verify_csrf
 from app.api.dashboard import status_context
+from app.clients.jackery import ChargeMode
 from app.config import get_settings
 from app.models.schedule import PlugState
 from app.repositories.database import get_session
@@ -44,6 +45,21 @@ def manual_power(request: Request, target: Literal["on", "off"]) -> RedirectResp
         return _back("/", f"プラグを {log.requested_state} にできませんでした：{log.error_message}", error=True)
     suffix = "（Dry Run：コマンドは送信していません）" if log.dry_run else ""
     return _back("/", f"プラグを {log.requested_state} にしました。自動制御を停止しています{suffix}")
+
+
+@router.post("/control/charge-mode/{mode}", name="charge_mode", dependencies=[Depends(verify_csrf)])
+def charge_mode(request: Request, mode: Literal["fast", "silent"]) -> RedirectResponse:
+    """ポータブル電源の充電モード（高速充電／静かな充電）の手動変更。超急速充電は扱わない（docs/07 §7.10）。"""
+    control = request.app.state.control
+    target = ChargeMode.FAST if mode == "fast" else ChargeMode.SILENT
+    try:
+        change = control.manual_charge_mode(target)
+    except ValueError as exc:
+        return _back("/", str(exc), error=True)
+    if change.error is not None:
+        return _back("/", f"充電モードを{target.label}にできませんでした：{change.error}", error=True)
+    suffix = "（Dry Run：コマンドは送信していません）" if change.result.value == "DRY_RUN" else ""
+    return _back("/", f"充電モードを{target.label}にしました{suffix}")
 
 
 @router.post("/control/auto/{action}", name="auto_control", dependencies=[Depends(verify_csrf)])

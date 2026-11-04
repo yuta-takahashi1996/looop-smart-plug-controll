@@ -52,9 +52,9 @@ SWITCHBOT_DEVICE_ID=
 - 失敗した要求は5分間繰り返さない（API の呼び出し回数の上限のため）。照合できなかった場合はプラグの状態を「不明」とし、次のサイクルで ON への初期化から行う。
 - 操作前の状態がすでに要求状態であれば、コマンドは送信せず成功として記録する。
 
-## 8.4 ポータブル電源（Jackery）の残量取得
+## 8.4 ポータブル電源（Jackery）の残量取得・充電モードの変更
 
-Jackery は公式 API を公開していないため、Jackery アプリが利用しているクラウド API（`https://iot.jackeryapp.com`）から状態を取得する（`app/clients/jackery.py`）。取得のみを行い、ポータブル電源の操作はしない。
+Jackery は公式 API を公開していないため、Jackery アプリが利用しているクラウド API（`https://iot.jackeryapp.com`）から状態を取得する（`app/clients/jackery.py`）。操作は充電モード（高速充電／静かな充電）の変更のみとし、超急速充電・出力の ON/OFF などは扱わない（docs/07-control-logic.md §7.10）。
 
 | 処理 | エンドポイント |
 |---|---|
@@ -72,8 +72,33 @@ Jackery は公式 API を公開していないため、Jackery アプリが利�
 | ot / it | 残り給電時間・満充電までの時間（1/10 時間。アプリの表示と同じ値。参考値） |
 | bt | 電池温度（1/10 ℃） |
 | oac | AC 出力の ON/OFF |
+| cs | 充電モード（0=高速充電、1=静かな充電。それ以外は不明として扱う） |
+| sfc | 超急速充電の有効・無効（表示・変更しない） |
 
 - 同じアカウントで同時にログインできるのは1台のみのため、**取得専用のアカウント**を作り、本アカウントからデバイスを共有して使う（取得専用アカウントはスマホでは使わない）。
 - 認証情報は環境変数（`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` / `JACKERY_DEVICE_ID`）で管理し、Git や DB に保存しない。
 - 非公式 API のため、予告なく使えなくなる可能性がある。その場合は残量不明として扱い、OFF 時間の制限で保護する（docs/07-control-logic.md §7.7）。
 - 動作確認は `uv run python scripts/jackery_check.py [devices|status|raw]` で行う（読み取りのみ）。
+
+### 充電モードの変更
+
+充電モードは HTTP では変更できず、Jackery アプリと同じく MQTT でコマンドを送る（調査の経緯は [jackery-charge-mode-research.md](jackery-charge-mode-research.md)）。
+
+| 項目 | 値 |
+|---|---|
+| ブローカー | `emqx.jackeryapp.com:8883`（MQTT 5、TLS。CA は Jackery アプリ同梱の自己署名証明書 `app/clients/jackery-ca.crt`） |
+| クライアントID | `{userId}@APP` |
+| ユーザー名 | `{userId}@{ログイン時の端末ID}` |
+| パスワード | ログイン応答の `mqttPassWord`（AES-256 鍵）でユーザー名を AES/CBC 暗号化した値（IV は鍵の先頭16バイト） |
+| 送信先 | `hb/app/{userId}/command`（QoS 1） |
+| 通知 | `hb/app/{userId}/device` |
+| コマンド | `messageType=DevicePropertyChange`、`actionId=10`、`body={"cs": "0"}`（高速充電。文字列）／`{"cs": 1}`（静かな充電）、`deviceSn` は状態取得の `device.deviceSn` |
+
+- MQTT 3.1.1 では接続・購読はできるが、送信したコマンドがエラーなく破棄され機器に届かない（2026-11 に確認）。必ず MQTT 5 で接続する。
+- 接続した直後（特にログインし直した直後）に送ると、受領応答は成功でもコマンドが機器に届かないことがある。接続・購読してから15秒待って送信し、機器からの通知がなければ同じ接続で1回だけ送り直す。
+- 高速充電は文字列の `"0"`、静かな充電は数値の `1` で送る（どちらも実機で反映を確認した形。機器からの通知・HTTP の値は数値）。
+- 変更前に HTTP で状態を取得し、すでに目的のモードなら送信しない。
+- 送信後は機器からの通知を最大10秒待ち（送り直した場合はさらに10秒）、通知の有無によらず HTTP で再取得した `cs` が期待値になった場合のみ成功とする（3秒間隔で最大5回）。照合できなければ成功扱いにしない（UNCONFIRMED）。
+- MQTT の認証に失敗した場合は、`mqttPassWord` を更新するため1回だけログインし直して再送する。
+- 共有の権限が読み取り専用（`level=3`）の場合は変更できない。取得専用アカウントへの共有は操作可能な権限で行う。
+- 実機での確認は `uv run python scripts/jackery_check.py charge-mode fast|silent --confirm` で行う（DRY_RUN によらず送信する）。
