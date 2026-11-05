@@ -25,15 +25,17 @@ FORECAST_RETRY_COUNT=3
 # SwitchBot
 SWITCHBOT_TOKEN=
 SWITCHBOT_SECRET=
+# 既存の1台を移行するときだけ使う（移行後は画面で機器を登録する）
 SWITCHBOT_DEVICE_ID=
 
 # Jackery（ポータブル電源の残量取得。取得専用アカウント）
 JACKERY_ACCOUNT=
 JACKERY_PASSWORD=
+# 既存の1台を移行するときだけ使う（移行後は設定画面でポータブル電源を登録する）
 JACKERY_DEVICE_ID=
-# 残量がこの値（%）以下になる（予測を含む）前に ON に戻す
+# ポータブル電源を追加するときの残量の下限（%）の初期値（ポータブル電源ごとに設定画面で変更する）
 BATTERY_MIN_PERCENT=5
-# 残量の減り方の予測に使う容量（Wh）
+# 既存の1台を移行するときの容量（Wh）の初期値（追加時は種別の公称容量）
 BATTERY_CAPACITY_WH=1070
 # でんき予報のスケジュールの開始・終了時に設定する充電モード（FAST=高速充電 / SILENT=静かな充電 / KEEP=変更しない）
 CHARGE_MODE_START=SILENT
@@ -48,6 +50,8 @@ ROUND_TRIP_EFFICIENCY=0.85
 MAX_CONTINUOUS_OFF_MINUTES=120
 MAX_DAILY_OFF_MINUTES=180
 MIN_SWITCH_INTERVAL_MINUTES=30
+# 1つのスケジュールの対象機器の上限
+MAX_DEVICES_PER_SCHEDULE=5
 
 ESTIMATED_AVERAGE_POWER_W=150
 
@@ -76,7 +80,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 
 ## SwitchBot
 
-`SWITCHBOT_TOKEN` / `SWITCHBOT_SECRET` は SwitchBot アプリの「プロフィール → 設定 → アプリバージョンを10回タップ → 開発者向けオプション」で取得する。`SWITCHBOT_DEVICE_ID` は `uv run python scripts/switchbot_check.py devices` で確認できる。未設定の場合、プラグ状態は「未確認」と表示し、SwitchBot API を呼び出さない。
+`SWITCHBOT_TOKEN` / `SWITCHBOT_SECRET` は SwitchBot アプリの「プロフィール → 設定 → アプリバージョンを10回タップ → 開発者向けオプション」で取得する。未設定の場合、機器の状態は「未確認」と表示し、SwitchBot API を呼び出さない。制御する機器は制御機器画面（`/devices`）で選ぶ。`SWITCHBOT_DEVICE_ID` は、複数機器の制御への移行時に既存の1台を登録するためだけに使う（docs/17 §17.4.7）。
 
 `APP_ENV=test` の場合、スケジューラー（予報取得・プラグ状態確認などの定期ジョブ）は起動しない。
 
@@ -86,7 +90,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 
 ## Jackery
 
-`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。`JACKERY_DEVICE_ID` は `uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。`CHARGE_MODE_START` / `CHARGE_MODE_END` はでんき予報のスケジュールの開始・終了時に設定する充電モードの既定値で、設定画面からも変更できる（保存した値が優先）。任意スケジュールはルールごとに指定する。
+`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。複数台は同じアカウントに共有し、設定画面で機器一覧から選んで登録する。`JACKERY_DEVICE_ID` は移行時に既存の1台を登録するためだけに使い（`uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい）、`BATTERY_MIN_PERCENT`・`BATTERY_CAPACITY_WH`・`ROUND_TRIP_EFFICIENCY` はポータブル電源の設定の初期値として使う。FOSSiBOT の環境変数は調査の結果で追加する（docs/17 §17.9.4）。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。`CHARGE_MODE_START` / `CHARGE_MODE_END` はでんき予報のスケジュールの開始・終了時に設定する充電モードの既定値で、設定画面からも変更できる（保存した値が優先）。任意スケジュールはルールごとに指定する。
 
 ## `$` を含む値
 

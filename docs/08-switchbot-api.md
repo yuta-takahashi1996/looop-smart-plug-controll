@@ -14,6 +14,8 @@ https://api.switch-bot.com/v1.1
 | 状態取得 | GET /devices/{deviceId}/status |
 | 電源制御 | POST /devices/{deviceId}/commands |
 
+デバイス一覧（`GET /devices`）の `deviceList` の各機器は `deviceId`・`deviceName`・`deviceType`・`enableCloudService`・`hubDeviceId` を持つ。制御デバイス設定画面（docs/17 §17.5）で一覧を表示し、`deviceType` を種別マスター（`device_types`）のコードとして使う。ON／OFF の対象にできるのはプラグ・リレースイッチ（`Plug Mini (JP)` など、docs/17 §17.4.2）でクラウドサービスが有効な機器に限る。呼び出し上限は1日10,000回のため、一覧の取得は画面を開いたとき（前回から24時間以上）と再取得の操作時だけにする。
+
 ONコマンド例：
 
 ```json
@@ -31,10 +33,9 @@ OFFの場合は`turnOff`を使用する。
 ```env
 SWITCHBOT_TOKEN=
 SWITCHBOT_SECRET=
-SWITCHBOT_DEVICE_ID=
 ```
 
-認証情報は環境変数で管理し、Gitへ登録しない。
+認証情報は環境変数で管理し、Gitへ登録しない。制御する機器は画面で選んで DB に登録する（`SWITCHBOT_DEVICE_ID` は既存の1台を移行するときだけ使う。docs/17 §17.4.7）。
 
 ## 8.3 操作後の状態確認
 
@@ -50,6 +51,7 @@ SWITCHBOT_DEVICE_ID=
 - 送信後は3秒ごとに最大5回状態を取得し、期待状態になれば成功（SUCCESS）とする。ならなければ1回だけ送り直す。
 - それでも期待状態にならない場合は失敗（FAILED。状態を取得できない場合は未確認 UNCONFIRMED）として記録し、成功扱いにしない。異常として表示する。
 - 失敗した要求は5分間繰り返さない（API の呼び出し回数の上限のため）。照合できなかった場合はプラグの状態を「不明」とし、次のサイクルで ON への初期化から行う。
+- 以上は機器ごとに行う。複数の機器は並行して処理し（同時に最大5台）、1台の失敗で他の機器を止めない。
 - 操作前の状態がすでに要求状態であれば、コマンドは送信せず成功として記録する。
 
 ## 8.4 ポータブル電源（Jackery）の残量取得・充電モードの変更
@@ -76,7 +78,7 @@ Jackery は公式 API を公開していないため、Jackery アプリが利�
 | sfc | 超急速充電の有効・無効（表示・変更しない） |
 
 - 同じアカウントで同時にログインできるのは1台のみのため、**取得専用のアカウント**を作り、本アカウントからデバイスを共有して使う（取得専用アカウントはスマホでは使わない）。
-- 認証情報は環境変数（`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` / `JACKERY_DEVICE_ID`）で管理し、Git や DB に保存しない。
+- 認証情報は環境変数（`JACKERY_ACCOUNT` / `JACKERY_PASSWORD`）で管理し、Git や DB に保存しない。複数台は同じ取得専用アカウントに共有し、設定画面で機器一覧から選んで登録する（`JACKERY_DEVICE_ID` は既存の1台を移行するときだけ使う。docs/17 §17.8）。
 - 非公式 API のため、予告なく使えなくなる可能性がある。その場合は残量不明として扱い、OFF 時間の制限で保護する（docs/07-control-logic.md §7.7）。
 - 動作確認は `uv run python scripts/jackery_check.py [devices|status|raw]` で行う（読み取りのみ）。
 
@@ -102,3 +104,7 @@ Jackery は公式 API を公開していないため、Jackery アプリが利�
 - MQTT の認証に失敗した場合は、`mqttPassWord` を更新するため1回だけログインし直して再送する。
 - 共有の権限が読み取り専用（`level=3`）の場合は変更できない。取得専用アカウントへの共有は操作可能な権限で行う。
 - 実機での確認は `uv run python scripts/jackery_check.py charge-mode fast|silent --confirm` で行う（DRY_RUN によらず送信する）。
+
+## 8.5 ポータブル電源（FOSSiBOT F2400）
+
+FOSSiBOT（BrightEMS アプリ、メーカーは SYDPOWER）は公式 API を公開していない。非公式の方式（クラウド API、または自前の MQTT ブローカー）で残量の取得と AC 静音充電の切り替えができるかを調査し、採用の条件を満たした場合のみ実装する（docs/17-multi-device.md §17.9）。充電モードは、静かな充電＝AC 静音充電 ON、高速充電＝AC 静音充電 OFF として扱う。エンドポイント・認証・環境変数は調査の結果で本節に追記する。

@@ -12,6 +12,11 @@
 | daily_summaries | 日次集計・推定節約額（前日分を毎日集計する。当日分は画面で都度集計する） |
 | price_adjustments | 請求単価への加算額 |
 | schedule_rules | 任意スケジュールのルール |
+| device_types | 機器の種別のマスター（docs/17 §17.4.2） |
+| devices | 登録した機器（制御機器・ポータブル電源。docs/17 §17.4.3） |
+| portable_power_settings | ポータブル電源ごとの設定（docs/17 §17.4.4） |
+| schedule_devices | スケジュールの対象機器と機器ごとの実行結果（docs/17 §17.4.5） |
+| schedule_rule_devices | ルールの対象機器（docs/17 §17.4.6） |
 
 日時はすべて UTC で保存し、表示時に `TZ` のタイムゾーンへ変換する。
 
@@ -47,14 +52,13 @@
 | manually_modified | 手動変更済み（有効・無効の切り替えまたは時間変更。再生成で上書きしない） |
 | reason | 制御理由 |
 | estimated_saving | 推定節約額（電源単価で算出） |
-| status | 実行状態（PENDING / RUNNING / DONE / ABORTED / SKIPPED、docs/07 §7.8） |
-| executed_start_at / executed_end_at | 実際に OFF にした（Dry Run では OFF にするはずだった）時間帯 |
-| executed_saving | 実行した時間帯の推定節約額（推定節約額の検証用） |
+| status | 実行状態（PENDING / RUNNING / DONE / ABORTED / SKIPPED、docs/07 §7.8）。機器ごとの状態（schedule_devices）をまとめた値 |
+| executed_saving | 実行した時間帯の推定節約額の機器ごとの合計（推定節約額の検証用） |
 | status_reason | 中断・未実行の理由 |
-| battery_start_percent / battery_end_percent | 実行開始時・終了時のポータブル電源の残量（取得できた場合） |
-| measured_power_w | 実行中に取得した消費電力（出力W）の平均（取得できた場合） |
 | charge_mode_start / charge_mode_end | 開始時・終了時に設定する充電モード（FAST：高速充電 / SILENT：静かな充電 / KEEP：変更しない、docs/07 §7.10）。でんき予報のスケジュールは設定の既定値、任意スケジュールはルールの値 |
 | updated_at | 更新日時 |
+
+実際に OFF にした時間帯（`executed_start_at` / `executed_end_at`）・機器ごとの推定節約額・残量（`battery_start_percent` / `battery_end_percent`）・消費電力（`measured_power_w`）は、機器ごとに schedule_devices に持つ（docs/17 §17.4.5。既存の列は移行して削除する）。
 
 ## 10.3 control_logs
 
@@ -62,6 +66,7 @@
 |---|---|
 | id | 主キー |
 | executed_at | 操作日時 |
+| device_id | 操作した制御機器（devices.id） |
 | source | AUTO/MANUAL/SAFETY |
 | previous_state | 操作前状態 |
 | requested_state | 要求状態（ON / OFF） |
@@ -82,7 +87,7 @@
 
 秘匿情報はsystem_settingsへ保存せず、環境変数で管理する。
 
-`price_notices_baseline_at`（お知らせの初回確認日時、docs/06 §6.6）、`control_mode`（AUTO / MANUAL）、`real_control_enabled`（実制御の確認操作の有無、docs/14 §14.3）、`charge_mode_running_schedules`（充電モードの切り替えの対象とした実行中のスケジュールの ID、docs/07 §7.10）も system_settings に保存する。
+`price_notices_baseline_at`（お知らせの初回確認日時、docs/06 §6.6）、`control_mode`（AUTO / MANUAL）、`real_control_enabled`（実制御の確認操作の有無、docs/14 §14.3）、`charge_mode_running_schedules`（充電モードの切り替えの対象とした実行中のスケジュールの ID、docs/07 §7.10）、`forecast_schedule_devices`（でんき予報のスケジュールの対象機器、docs/17 §17.6）も system_settings に保存する。
 
 ## 10.5 system_events
 
@@ -90,6 +95,7 @@
 |---|---|
 | id | 主キー |
 | occurred_at | 発生日時 |
+| device_id | 関係する機器（devices.id。機器によらないイベントは NULL） |
 | level | INFO / WARNING / ERROR |
 | category | FORECAST（予報取得・検証）/ SWITCHBOT（通信・コマンドの失敗）/ BATTERY（ポータブル電源の残量取得）/ CHARGE_MODE（充電モードの変更）/ PRICE_NOTICE（単価に関わるお知らせ） |
 | message | 内容 |
@@ -133,7 +139,8 @@
 |---|---|
 | control_logs・control_schedules・forecast_prices | `DATA_RETENTION_DAYS`（初期値 400日。前年との比較のため1年強） |
 | system_events（解決済み） | 90日（単価に関わるお知らせは重複検知に使うため削除しない） |
-| daily_summaries・system_settings・price_adjustments・schedule_rules | 削除しない（schedule_rules は画面から削除する） |
+| daily_summaries・system_settings・price_adjustments・schedule_rules・device_types・devices・portable_power_settings | 削除しない（schedule_rules は画面から削除する。devices は制御対象から外しても行を残す） |
+| schedule_devices・schedule_rule_devices | 親（control_schedules・schedule_rules）と同時に削除する |
 
 毎日 3:30 に、SQLite のオンラインバックアップを `data/backups/app-YYYYMMDD.db` に作成し（`BACKUP_GENERATIONS` 世代、初期値14）、保持期間を過ぎたデータを削除して WAL の反映と `PRAGMA optimize` を行う（`app/services/maintenance.py`）。
 
@@ -153,3 +160,9 @@
 | created_at / updated_at | 作成・更新日時 |
 
 当日・翌日分を control_schedules に展開する（docs/07 §7.9）。
+
+## 10.10 機器の管理（device_types・devices・portable_power_settings・schedule_devices・schedule_rule_devices）
+
+複数の制御機器・ポータブル電源を管理するテーブル。カラムと移行の手順は docs/17-multi-device.md §17.4 を正とする。
+
+- daily_summaries は全機器の合計とする（機器別の集計は持たない）。

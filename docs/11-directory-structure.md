@@ -19,7 +19,9 @@ looop-power-controller/
 │   │   ├── dashboard.py
 │   │   ├── forecast.py
 │   │   ├── control.py
+│   │   ├── devices.py
 │   │   ├── history.py
+│   │   ├── schedule.py
 │   │   └── settings.py
 │   │
 │   ├── providers/
@@ -28,7 +30,9 @@ looop-power-controller/
 │   │
 │   ├── clients/
 │   │   ├── switchbot.py
-│   │   └── jackery.py
+│   │   ├── portable_power.py
+│   │   ├── jackery.py
+│   │   └── fossibot.py      # 調査の結果、採用した場合（docs/17 §17.9）
 │   │
 │   ├── services/
 │   │   ├── forecast.py
@@ -39,6 +43,7 @@ looop-power-controller/
 │   │   └── maintenance.py
 │   │
 │   ├── models/
+│   │   ├── device.py
 │   │   ├── forecast.py
 │   │   ├── schedule.py
 │   │   └── settings.py
@@ -51,6 +56,7 @@ looop-power-controller/
 │   │   ├── dashboard.html
 │   │   ├── schedule.html
 │   │   ├── history.html
+│   │   ├── devices.html
 │   │   ├── settings.html
 │   │   └── components/
 │   │

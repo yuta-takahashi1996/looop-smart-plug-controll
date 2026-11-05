@@ -15,6 +15,7 @@ Phase 7（運用改善、[docs/15-roadmap.md](docs/15-roadmap.md)）を実装中
 - 起動・終了時：起動時はプラグの状態を取得して引き継ぎ（取得できない場合のみ ON へ初期化、`ControlService.initialize`）、終了時はプラグを操作しない（`shutdown`、[docs/09-scheduling.md](docs/09-scheduling.md) §9.2・§9.3）。
 - 任意スケジュール（Phase 8、[docs/07-control-logic.md](docs/07-control-logic.md) §7.9）：`schedule_rules` のルール（ON／OFF・1回のみ／毎日／曜日指定）を `optimizer.regenerate` が当日・翌日分の `control_schedules`（`source_level=CUSTOM`）に展開する。予報の有無によらず展開し、でんき予報のスケジュールより優先する。任意 OFF にはでんき注意報と同じ制限を適用する（`validate_rule`・`safety.check_off`）。
 - 充電モード（[docs/07-control-logic.md](docs/07-control-logic.md) §7.10）：Jackery の充電モード（高速充電／静かな充電、`cs`）を MQTT で変更する（`JackeryClient.set_charge_mode`、HTTP で再取得して照合）。MQTT 5 で接続し、接続後15秒待ってから送る（3.1.1 や接続直後の送信はエラーなく破棄されることがある。[docs/08-switchbot-api.md](docs/08-switchbot-api.md) §8.4）。`ControlService._sync_charge_mode` がスケジュールの開始・終了時に、スケジュールごとの設定（`charge_mode_start` / `charge_mode_end`：静かな充電／高速充電／変更しない）へ切り替える。でんき予報のスケジュールは設定画面の既定値、任意スケジュールはルールの値で作り、運転スケジュール画面で個別に変更できる。ダッシュボードから手動でも変更できる。超急速充電（`sfc`）は扱わない。Dry Run 中は送信しない。
+- 次の予定（Phase 9〜12、仕様確定・未実装）：複数の SwitchBot 機器・複数のポータブル電源の制御と FOSSiBOT F2400 の調査。仕様は [docs/17-multi-device.md](docs/17-multi-device.md) を正とする（他の仕様書は同書を参照する形で反映済み。実装前のため、現状のコードは1台構成のまま）。
 - 運用：`app/services/maintenance.py` が日次集計（`daily_summaries`）・バックアップ（`data/backups/`）・古いデータの削除を行う。本番は Docker（`docker compose up -d --build`）で動かす。`.env` の `$` を含む値はシングルクォートで囲む。
 
 `docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。
