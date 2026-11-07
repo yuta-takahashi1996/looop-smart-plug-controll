@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% from "components/ui.html" import card %}
+
+{% block title %}制御機器 | Looop Smart Plug Controller{% endblock %}
+
+{% macro type_note(d) -%}
+{%- if not d.cloud_enabled -%}<span class="text-xs text-slate-500">クラウドサービスが無効</span>
+{%- elif not d.device_type.verified -%}<span class="text-xs text-amber-300">実機での確認が済んでいない種別です</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<h1 class="mb-1 text-2xl font-bold">制御機器</h1>
+<p class="mb-4 text-sm text-slate-400">
+  SwitchBot の機器（プラグ）から制御対象を選びます。現在は制御対象の先頭の1台（「制御中」）だけを ON／OFF します。
+</p>
+
+{% if message %}<p class="mb-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status">{{ message }}</p>{% endif %}
+{% if errors %}
+<ul class="mb-4 list-inside list-disc rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">
+  {% for e in errors %}<li>{{ e }}</li>{% endfor %}
+</ul>
+{% endif %}
+
+<form id="devices-form" method="post" action="{{ url_for('save_devices') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <div class="grid gap-4 md:grid-cols-2">
+    {% call card("SwitchBot の機器") %}
+    <div class="mb-3 flex items-center gap-2 text-xs text-slate-400">
+      <button type="submit" form="refresh-form" class="rounded-md border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800">再取得</button>
+      {% if fetched_at %}<span>最終取得 {{ fetched_at|local("%m/%d %H:%M") }}</span>{% endif %}
+    </div>
+    {% if list_error %}
+    <p class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-sm text-rose-200" role="alert">機器の一覧を取得できませんでした：{{ list_error }}</p>
+    {% endif %}
+    <ul id="available" class="min-h-[4rem] divide-y divide-slate-800/70 rounded-lg border border-dashed border-slate-800" data-pane="available">
+      {% for d in available %}
+      {% set selectable = d.cloud_enabled %}
+      <li class="flex items-center gap-3 px-3 py-2 {{ '' if selectable else 'text-slate-500' }}"
+          {% if selectable %}draggable="true" data-device="{{ d.external_id }}" data-name="{{ d.name }}"{% endif %}>
+        {% if selectable %}<input type="hidden" name="active" value="{{ d.external_id }}" disabled>{% endif %}
+        <div class="min-w-0 flex-1">
+          <div class="truncate font-medium">{{ d.name }}</div>
+          <div class="text-xs text-slate-400">{{ d.device_type.name }} {{ type_note(d) }}</div>
+        </div>
+        {% if selectable %}
+        <button type="button" data-move class="shrink-0 rounded-md border border-slate-700 px-3 py-1 text-xs hover:bg-slate-800">追加 →</button>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% if listed and not available %}<p class="mt-2 text-xs text-slate-500">制御対象にできる機器（プラグ）はありません。</p>{% endif %}
+    {% if unsupported %}
+    <details class="mt-3 text-xs text-slate-500">
+      <summary class="cursor-pointer">非対応の機器 {{ unsupported|length }}台（表示していません）</summary>
+      <ul class="mt-2 space-y-1 pl-4">
+        {% for d in unsupported %}<li>{{ d.name }}<span class="ml-2 text-slate-600">{{ d.device_type.name }}</span></li>{% endfor %}
+      </ul>
+      <p class="mt-2">制御対象にできるのはプラグだけです。</p>
+    </details>
+    {% endif %}
+    {% endcall %}
+
+    {% call card("制御対象") %}
+    <ul id="selected" class="min-h-[4rem] divide-y divide-slate-800/70 rounded-lg border border-dashed border-slate-800" data-pane="selected">
+      {% for row in active_rows %}
+      {% set d = row.device %}
+      {% set confirm_parts = [] %}
+      {% if row.controlling and controlling_off %}{% set _ = confirm_parts.append("OFF 中のため ON に戻してから外します") %}{% endif %}
+      {% if d.id in forecast_ids %}{% set _ = confirm_parts.append("でんき予報のスケジュールの対象機器から外します") %}{% endif %}
+      <li class="flex items-center gap-3 px-3 py-2" draggable="true" data-device="{{ d.external_id }}" data-name="{{ d.name }}"
+          data-confirm="{{ confirm_parts|join('、') }}">
+        <input type="hidden" name="active" value="{{ d.external_id }}">
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="truncate font-medium">{{ d.name }}</span>
+            {% if row.controlling %}<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs text-emerald-300">制御中</span>{% endif %}
+          </div>
+          <div class="text-xs text-slate-400">
+            {{ d.device_type.name }}
+            {% if listed and row.listed is none %}<span class="text-rose-300">SwitchBot に見つかりません</span>{% endif %}
+          </div>
+          <div class="text-xs text-slate-400">給電先：{{ d.power_source.name if d.power_source else "未設定" }}</div>
+          {% if d.note %}<div class="text-xs text-slate-500">{{ d.note }}</div>{% endif %}
+        </div>
+        <button type="button" data-move class="shrink-0 rounded-md border border-slate-700 px-3 py-1 text-xs hover:bg-slate-800">← 外す</button>
+      </li>
+      {% endfor %}
+    </ul>
+    {% if not active_rows %}<p class="mt-2 text-xs text-slate-500">制御対象の機器がありません。左の一覧から追加してください（制御対象がない間はコマンドを送信しません）。</p>{% endif %}
+    <div class="mt-4 flex items-center justify-end gap-3">
+      <span id="dirty-note" class="hidden text-xs text-amber-300">未保存の変更があります</span>
+      <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">保存</button>
+    </div>
+    {% endcall %}
+  </div>
+</form>
+<form id="refresh-form" method="post" action="{{ url_for('refresh_devices') }}" class="hidden">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+</form>
+
+{% if active_rows %}
+<div class="mt-4">
+  {% call card("制御対象の設定", id="edit") %}
+  {% set input_class = "mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none" %}
+  <div class="space-y-2">
+    {% for row in active_rows %}
+    {% set d = row.device %}
+    {% set errs = edit_errors.get(d.id, []) %}
+    <details class="rounded-lg border border-slate-800" {% if errs %}open{% endif %}>
+      <summary class="cursor-pointer px-3 py-2 text-sm">編集：{{ d.name }}</summary>
+      <form method="post" action="{{ url_for('edit_device', device_id=d.id) }}" class="grid gap-3 border-t border-slate-800 p-3 sm:grid-cols-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        {% if errs %}
+        <ul class="list-inside list-disc rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-sm text-rose-200 sm:col-span-2" role="alert">
+          {% for e in errs %}<li>{{ e }}</li>{% endfor %}
+        </ul>
+        {% endif %}
+        <label class="block text-sm">
+          <span class="text-slate-400">名前</span>
+          <input name="name" required maxlength="50" value="{{ d.name }}" class="{{ input_class }}">
+        </label>
+        <label class="block text-sm">
+          <span class="text-slate-400">給電先のポータブル電源</span>
+          <select name="power_source_id" class="{{ input_class }}">
+            <option value="">未設定（残量を使わず OFF 時間の制限を適用）</option>
+            {% for p in portable_powers %}
+            <option value="{{ p.id }}" {{ 'selected' if d.power_source_id == p.id }}>{{ p.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="block text-sm">
+          <span class="text-slate-400">想定平均負荷（W）</span>
+          <input name="estimated_power_w" type="number" min="0" step="1" value="{{ '%g'|format(d.estimated_power_w) if d.estimated_power_w is not none else '' }}"
+                 placeholder="空欄なら設定画面の値" class="{{ input_class }} tabular-nums">
+        </label>
+        <label class="block text-sm">
+          <span class="text-slate-400">説明（任意）</span>
+          <input name="note" maxlength="200" value="{{ d.note or '' }}" class="{{ input_class }}">
+        </label>
+        <p class="text-xs text-slate-500 sm:col-span-2">
+          SwitchBot の機器 ID：{{ d.external_id }}。給電先は、この機器を OFF にしたときに家電へ給電するポータブル電源です（残量で ON に戻す判定に使います）。
+          {% if row.controlling %}実行中のスケジュールがある間は給電先を変更できません。{% endif %}
+        </p>
+        <div class="sm:col-span-2 text-right">
+          <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">保存</button>
+        </div>
+      </form>
+    </details>
+    {% endfor %}
+  </div>
+  {% endcall %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const form = document.getElementById("devices-form");
+  const panes = { available: document.getElementById("available"), selected: document.getElementById("selected") };
+  const initial = new Set([...panes.selected.querySelectorAll("li[data-device]")].map((li) => li.dataset.device));
+  const dirtyNote = document.getElementById("dirty-note");
+
+  function current() {
+    return new Set([...panes.selected.querySelectorAll("li[data-device]")].map((li) => li.dataset.device));
+  }
+
+  function place(li, paneName) {
+    panes[paneName].appendChild(li);
+    const toSelected = paneName === "selected";
+    li.querySelector('input[name="active"]').disabled = !toSelected;
+    li.querySelector("[data-move]").textContent = toSelected ? "← 外す" : "追加 →";
+    const now = current();
+    const dirty = now.size !== initial.size || [...now].some((id) => !initial.has(id));
+    dirtyNote.classList.toggle("hidden", !dirty);
+  }
+
+  form.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-move]");
+    if (!button) return;
+    const li = button.closest("li");
+    place(li, li.parentElement === panes.selected ? "available" : "selected");
+  });
+
+  // PC ではドラッグ＆ドロップでも移せる
+  let dragged = null;
+  form.addEventListener("dragstart", (event) => {
+    dragged = event.target.closest("li[data-device]");
+    if (dragged) event.dataTransfer.effectAllowed = "move";
+  });
+  for (const [name, pane] of Object.entries(panes)) {
+    pane.addEventListener("dragover", (event) => { if (dragged) event.preventDefault(); });
+    pane.addEventListener("drop", (event) => {
+      event.preventDefault();
+      if (dragged && dragged.parentElement !== pane) place(dragged, name);
+      dragged = null;
+    });
+  }
+
+  // 外す機器に確認が必要な事項があれば、保存前に確認する（docs/17 §17.5.3）
+  form.addEventListener("submit", (event) => {
+    const messages = [...panes.available.querySelectorAll("li[data-confirm]")]
+      .filter((li) => li.dataset.confirm)
+      .map((li) => `${li.dataset.name}：${li.dataset.confirm}`);
+    if (messages.length && !confirm(`次の機器を制御対象から外します。\n\n${messages.join("\n")}\n\nよろしいですか？`)) {
+      event.preventDefault();
+    }
+  });
+})();
+</script>
+{% endblock %}

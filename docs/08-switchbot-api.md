@@ -14,7 +14,7 @@ https://api.switch-bot.com/v1.1
 | 状態取得 | GET /devices/{deviceId}/status |
 | 電源制御 | POST /devices/{deviceId}/commands |
 
-デバイス一覧（`GET /devices`）の `deviceList` の各機器は `deviceId`・`deviceName`・`deviceType`・`enableCloudService`・`hubDeviceId` を持つ。制御デバイス設定画面（docs/17 §17.5）で一覧を表示し、`deviceType` を種別マスター（`device_types`）のコードとして使う。ON／OFF の対象にできるのはプラグ・リレースイッチ（`Plug Mini (JP)` など、docs/17 §17.4.2）でクラウドサービスが有効な機器に限る。呼び出し上限は1日10,000回のため、一覧の取得は画面を開いたとき（前回から24時間以上）と再取得の操作時だけにする。
+デバイス一覧（`GET /devices`）の `deviceList` の各機器は `deviceId`・`deviceName`・`deviceType`・`enableCloudService`・`hubDeviceId` を持つ。制御デバイス設定画面（docs/17 §17.5）で一覧を表示し、`deviceType` を種別マスター（`device_types`）のコードとして使う。ON／OFF の対象にできるのはプラグ（`Plug Mini (JP)` など、docs/17 §17.4.2）でクラウドサービスが有効な機器に限り、画面には対応する種別の機器だけを表示する。呼び出し上限は1日10,000回のため、一覧の取得は画面を開いたとき（前回から24時間以上）と再取得の操作時だけにする。
 
 ONコマンド例：
 

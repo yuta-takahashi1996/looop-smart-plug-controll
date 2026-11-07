@@ -18,11 +18,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api import auth, control, dashboard, forecast, history, schedule
+from app.api import auth, control, dashboard, devices, forecast, history, schedule
 from app.api import settings as settings_api
 from app.clients.jackery import JackeryClient
 from app.clients.switchbot import SwitchBotClient
-from app.config import get_settings
+from app.config import Settings, get_settings
+from app.models import device as device_models
 from app.models.forecast import ADJUSTMENT_CATEGORY_LABELS
 from app.providers.looop import LooopForecastProvider
 from app.repositories.database import SessionLocal, get_session
@@ -51,18 +52,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     switchbot = SwitchBotClient(
         settings.switchbot_token.get_secret_value(),
         settings.switchbot_secret.get_secret_value(),
-        settings.switchbot_device_id,
+        "",  # 制御する機器は DB の devices から設定する（bind_devices。SWITCHBOT_DEVICE_ID は移行にだけ使う）
     )
+    app.state.switchbot = switchbot
+    app.state.switchbot_devices = devices.DeviceListCache()
     app.state.plug_monitor = PlugMonitor(switchbot, SessionLocal)
-    battery = BatteryMonitor(
-        JackeryClient(settings.jackery_account, settings.jackery_password.get_secret_value()),
-        settings.jackery_device_id,
-        SessionLocal,
-    )
-    if not app.state.plug_monitor.configured:
-        logger.warning("SwitchBot の認証情報が未設定のため、プラグ状態を確認できません")
-
+    jackery = JackeryClient(settings.jackery_account, settings.jackery_password.get_secret_value())
+    # 取得するポータブル電源は機器の登録（bind_devices）で決める
+    battery = BatteryMonitor(jackery, None, SessionLocal)
     app.state.control = ControlService(settings, SessionLocal, switchbot=switchbot, battery=battery)
+    _setup_devices(settings, switchbot, jackery, app.state.control)
+    if not app.state.plug_monitor.configured:
+        logger.warning("SwitchBot の認証情報または制御対象の機器が未設定のため、プラグ状態を確認できません")
     if not app.state.control.dry_run:
         logger.warning("実制御が有効です（SwitchBot へコマンドを送信します）")
 
@@ -77,6 +78,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         scheduler.shutdown(wait=True)
         app.state.control.shutdown()
     logger.info("shutting down")
+
+
+def _setup_devices(settings: Settings, switchbot: SwitchBotClient, jackery: JackeryClient, control: ControlService) -> None:
+    """種別マスターの補完、既存の1台の移行（docs/17 §17.4.7）、制御する機器の設定。失敗しても Web UI は起動させる。"""
+
+    def switchbot_name(device_id: str) -> str | None:
+        if not switchbot.credentials_configured:
+            return None
+        found = next((d for d in switchbot.list_devices() if d.get("deviceId") == device_id), None)
+        return str(found["deviceName"]) if found and found.get("deviceName") else None
+
+    def jackery_device() -> tuple[str, str | None] | None:
+        if not jackery.configured:
+            return None
+        listed = jackery.list_devices()
+        if not listed:
+            return None
+        return str(listed[0].get("devId")), listed[0].get("devName") or None
+
+    try:
+        with SessionLocal() as session:
+            device_models.seed_device_types(session)
+            if not device_models.migrate_legacy_devices(
+                session, settings, switchbot_name=switchbot_name, jackery_device=jackery_device
+            ):
+                logger.warning("ポータブル電源の一覧を取得できなかったため、機器の移行の一部を次回の起動時にやり直します")
+            control.bind_devices(session)
+    except Exception:
+        logger.exception("failed to set up devices")
 
 
 settings = get_settings()
@@ -124,7 +154,7 @@ templates.env.globals["adjustment_labels"] = ADJUSTMENT_CATEGORY_LABELS
 templates.env.filters["local"] = lambda value, fmt: value.astimezone(ZoneInfo(settings.tz)).strftime(fmt)
 
 app.include_router(auth.router)
-for module in (dashboard, control, forecast, schedule, history, settings_api):
+for module in (dashboard, control, forecast, schedule, history, devices, settings_api):
     app.include_router(module.router, dependencies=[Depends(auth.require_login)])
 
 

@@ -82,7 +82,12 @@ class SwitchBotClient:
 
     @property
     def configured(self) -> bool:
-        return bool(self._token and self._secret and self.device_id)
+        return bool(self.credentials_configured and self.device_id)
+
+    @property
+    def credentials_configured(self) -> bool:
+        """認証情報が設定されているか（機器一覧の取得には機器 ID は不要）。"""
+        return bool(self._token and self._secret)
 
     def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> Any:
         if not (self._token and self._secret):
@@ -113,7 +118,7 @@ class SwitchBotClient:
 
     def _require_device(self) -> str:
         if not self.device_id:
-            raise SwitchBotNotConfiguredError("SWITCHBOT_DEVICE_ID が未設定です")
+            raise SwitchBotNotConfiguredError("制御対象の機器が未設定です（制御機器画面で選んでください）")
         return self.device_id
 
     def list_devices(self) -> list[dict[str, Any]]:

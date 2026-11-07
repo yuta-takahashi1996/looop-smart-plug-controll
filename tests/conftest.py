@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.main import app  # noqa: E402
+from app.models.device import seed_device_types  # noqa: E402
 from app.providers.base import DayPrices, FetchResult, ForecastFetchError, ForecastLevel, Notice  # noqa: E402
 from app.repositories.database import Base, SessionLocal, engine  # noqa: E402
 
@@ -98,6 +99,8 @@ def today() -> date:
 @pytest.fixture(autouse=True)
 def database() -> Iterator[None]:
     Base.metadata.create_all(engine)
+    with SessionLocal() as db_session:
+        seed_device_types(db_session)  # マイグレーションで初期登録する種別マスター
     yield
     Base.metadata.drop_all(engine)
 

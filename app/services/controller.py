@@ -5,6 +5,9 @@ Dry Run では SwitchBot へのコマンドを送信せず「実行するはず�
 かつ画面で有効にした場合のみ行う（docs/14 §14.3）。PlugMonitor はプラグ状態の読み取りのみを行い、画面は
 SwitchBot API を直接呼ばずに最後の確認結果を参照する（docs/05 §5.9）。BatteryMonitor はポータブル電源の
 残量の取得と充電モードの変更を行う（docs/07 §7.7・§7.10）。
+
+制御する機器は DB の devices から決める（`ControlService.bind_devices`）。複数機器の制御（docs/17 §17.7）までは、
+制御対象の先頭の1台と、その給電先のポータブル電源だけを扱う。
 """
 
 import logging
@@ -21,6 +24,8 @@ from sqlalchemy.orm import Session
 from app.clients.jackery import ChargeMode, JackeryClient, JackeryCommandUnconfirmed, JackeryError
 from app.clients.switchbot import PlugStatus, SwitchBotClient, SwitchBotError
 from app.config import Settings
+from app.models import device as device_models
+from app.models.device import DeviceState, Vendor
 from app.models.schedule import (
     ChargeModeOption,
     ControlLog,
@@ -69,11 +74,30 @@ class PlugMonitor:
         with self._lock:
             return self._snapshot
 
+    def reset(self) -> None:
+        """制御する機器が変わったときに、前の機器の状態を表示しないよう未確認に戻す。"""
+        with self._lock:
+            self._snapshot = PlugSnapshot(status=None, checked_at=None, error=None)
+
+    def _save_device_state(self, state: DeviceState, at: datetime) -> None:
+        """devices.last_state に最後に取得した状態を残す（制御対象から外すときの確認などに使う）。"""
+        external_id = getattr(self._client, "device_id", None)
+        if not external_id:
+            return
+        try:
+            with self._session_factory() as session:
+                device = device_models.find_device(session, Vendor.SWITCHBOT, external_id)
+                if device is not None:
+                    device.last_state, device.last_state_at = state, at
+                    session.commit()
+        except Exception:
+            logger.exception("failed to save device state")
+
     def refresh(self) -> PlugSnapshot:
         """SwitchBot から状態を取得して保持する。失敗時はイベントを記録する（同じエラーの連続記録はしない）。"""
         if not self._client.configured:
             snapshot = PlugSnapshot(
-                status=None, checked_at=None, error="SwitchBot の認証情報またはデバイスIDが未設定です"
+                status=None, checked_at=None, error="SwitchBot の認証情報または制御対象の機器が未設定です"
             )
             with self._lock:
                 self._snapshot = snapshot
@@ -89,6 +113,7 @@ class PlugMonitor:
                 # 直前に確認できていた状態は保持しない（古い状態を現在の状態として表示しないため）
                 self._snapshot = PlugSnapshot(status=None, checked_at=now, error=message)
             logger.warning("plug status check failed: %s", message)
+            self._save_device_state(DeviceState.UNKNOWN, now)
             if message != previous_error:
                 with self._session_factory() as session:
                     record_event(session, EventLevel.ERROR, EventCategory.SWITCHBOT, message)
@@ -98,6 +123,7 @@ class PlugMonitor:
             # 初回成功時も解決する（再起動前に記録された未解決エラーを残さないため）
             needs_resolve = self._snapshot.error is not None or self._snapshot.checked_at is None
             self._snapshot = PlugSnapshot(status=status, checked_at=now, error=None)
+        self._save_device_state(DeviceState(status.power), now)
         if needs_resolve:
             with self._session_factory() as session:
                 resolve_events(session, EventCategory.SWITCHBOT)
@@ -111,8 +137,9 @@ class BatteryMonitor:
     平均を予測に使うため、OFF を始めたときに samples をリセットする。
     """
 
-    def __init__(self, client: JackeryClient | None, device_id: str, session_factory: Callable[[], Session]) -> None:
+    def __init__(self, client: JackeryClient | None, device_id: str | None, session_factory: Callable[[], Session]) -> None:
         self._client = client
+        # 取得するポータブル電源の機器 ID。空文字は共有されている1台（機器の登録前の動作）、None は給電先が未設定
         self._device_id = device_id
         self._session_factory = session_factory
         self._lock = threading.Lock()
@@ -125,7 +152,20 @@ class BatteryMonitor:
 
     @property
     def configured(self) -> bool:
-        return self._client is not None and self._client.configured
+        return self._client is not None and self._client.configured and self._device_id is not None
+
+    @property
+    def device_id(self) -> str | None:
+        return self._device_id
+
+    def bind(self, device_id: str | None) -> None:
+        """取得するポータブル電源を変える（None は給電先が未設定で、残量を取得できない扱い。docs/17 §17.7.3）。"""
+        with self._lock:
+            if device_id == self._device_id:
+                return
+            self._device_id = device_id
+            self.last, self.last_error, self.samples = None, None, []
+            self.charge_mode, self.charge_mode_at = None, None
 
     def reset_samples(self) -> None:
         """OFF を始めたときに呼ぶ。直近の取得値（OFF 開始時に取得したもの）は残す。"""
@@ -139,7 +179,9 @@ class BatteryMonitor:
     def read(self, now: datetime) -> safety.BatteryReading | None:
         """残量と消費電力を取得する。取得できなければ None（エラーはイベントとして記録する）。"""
         if not self.configured:
-            self.last_error = "Jackery のアカウントが未設定です"
+            self.last_error = (
+                "給電先のポータブル電源が設定されていません" if self._device_id is None else "Jackery のアカウントが未設定です"
+            )
             return None
         assert self._client is not None
         try:
@@ -166,7 +208,7 @@ class BatteryMonitor:
         return reading
 
     def _resolve_device_id(self) -> str:
-        assert self._client is not None
+        assert self._client is not None and self._device_id is not None
         if self._device_id:
             return self._device_id
         devices = self._client.list_devices()
@@ -255,6 +297,7 @@ class ControlService:
         self.last_charge_change: ChargeModeChange | None = None
         self._charge_failed: tuple[ChargeMode, datetime] | None = None
         self._startup_state_kept = False  # 起動時に取得した状態を引き継いだ（最初のサイクルの記録の理由に使う）
+        self._device_id: int | None = None  # 制御している機器（devices.id。bind_devices で設定する）
         self._load_persisted()
 
     # --- 状態 ---
@@ -274,11 +317,42 @@ class ControlService:
     @property
     def dry_run(self) -> bool:
         """DRY_RUN=false かつ画面で実制御を有効にした場合のみ実制御（docs/14 §14.3）。"""
-        return self._settings.dry_run or not self._real_control_enabled or self._switchbot is None
+        return (
+            self._settings.dry_run
+            or not self._real_control_enabled
+            or self._switchbot is None
+            # 制御対象の機器がない間は送信先がないため Dry Run と同じ扱いにする
+            or not self._switchbot.configured
+        )
 
     @property
     def can_enable_real_control(self) -> bool:
         return not self._settings.dry_run and self._switchbot is not None and self._switchbot.configured
+
+    @property
+    def device_id(self) -> int | None:
+        return self._device_id
+
+    def bind_devices(self, session: Session) -> None:
+        """制御する機器（制御対象の先頭の1台）と、その給電先のポータブル電源を DB から設定する。
+
+        起動時と制御機器の保存時に呼ぶ。制御する機器が変わった場合は、前の機器の状態を引き継がず、
+        次の制御サイクルで新しい機器の状態から初期化する（状態不明 → 安全側の ON）。
+        """
+        with self._lock:
+            primary = device_models.primary_switch(session)
+            source_id = primary.power_source_id if primary is not None else None
+            source = session.get(device_models.Device, source_id) if source_id is not None else None
+            if self._switchbot is not None:
+                self._switchbot.device_id = primary.external_id if primary is not None else ""
+            self.battery.bind(source.external_id if source is not None and source.active else None)
+            primary_id = primary.id if primary is not None else None
+            if primary_id != self._device_id:
+                self._device_id = primary_id
+                self._state = None
+                self._failed = None
+                self._manual_off_since = None
+                logger.info("controlling device: %s", primary.name if primary is not None else "(none)")
 
     @property
     def control_mode(self) -> ControlMode:
@@ -338,6 +412,7 @@ class ControlService:
                 reason=reason,
                 dry_run=self.dry_run,
                 schedule_id=schedule_id,
+                device_id=self._device_id,
             )
             if self.dry_run:
                 log.actual_state, log.result = None, ControlResult.DRY_RUN
@@ -507,7 +582,7 @@ class ControlService:
         local_now = self._local(now)
         with self._lock, self._session_factory() as session:
             if not self.battery.configured:
-                raise ValueError("Jackery のアカウントが未設定のため、充電モードを変更できません")
+                raise ValueError("Jackery のアカウントまたは給電先のポータブル電源が未設定のため、充電モードを変更できません")
             self._charge_failed = None  # 手動の変更を優先し、失敗した自動変更は再試行しない
             return self._change_charge_mode(session, mode, ControlSource.MANUAL, f"手動操作（{mode.label}）", local_now)
 

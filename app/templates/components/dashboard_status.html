@@ -97,7 +97,7 @@
       {% set ch = battery.charge_change %}
       {% if ch and ch.error %}<span class="block text-xs text-rose-300">{{ ch.at|local("%H:%M") }} {{ "静かな充電" if ch.mode == "SILENT" else "高速充電" }}への変更に失敗：{{ ch.error }}</span>{% endif %}
       {% else %}
-      <span class="text-xs text-slate-500">未設定（Jackery のアカウントを設定すると変更できます）</span>
+      <span class="text-xs text-slate-500">未設定（Jackery のアカウントと、制御機器画面で給電先のポータブル電源を設定すると変更できます）</span>
       {% endif %}
     </dd>
     <dt class="text-slate-400">システム</dt>
