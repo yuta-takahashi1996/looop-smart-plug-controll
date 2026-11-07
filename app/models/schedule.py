@@ -9,7 +9,7 @@ docs/10 §10.9）から展開した ON／OFF の予定で、有効（enabled）�
 import enum
 from datetime import date, datetime, time
 
-from sqlalchemy import Boolean, Date, Enum, Float, Integer, String, Text, Time
+from sqlalchemy import Boolean, Date, Enum, Float, ForeignKey, Integer, String, Text, Time
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.repositories.database import Base, UTCDateTime
@@ -171,6 +171,8 @@ class ControlLog(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     dry_run: Mapped[bool] = mapped_column(Boolean)
     schedule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # スケジュールによる操作の場合
+    # 操作した制御機器（devices.id。docs/17 §17.4.7）。機器の登録前の記録は移行時に関連付ける
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"), nullable=True, index=True)
 
 
 class DailySummary(Base):
