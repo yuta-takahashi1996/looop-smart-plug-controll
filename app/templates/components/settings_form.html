@@ -23,6 +23,18 @@
         <span class="mt-1 block text-xs text-slate-400">無効の場合、注意報のスケジュールは運転スケジュール画面で個別に有効にしない限り実行しません。でんき警報のスケジュールはこの設定によらず有効になります。</span>
       </span>
     </label>
+    <div class="mt-4 text-sm">
+      <span class="font-medium">でんき予報のスケジュールの対象機器（{{ max_devices }}台まで）</span>
+      <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+        {% for d in switches %}
+        <label class="inline-flex items-center gap-1.5"><input type="checkbox" name="forecast_device_ids" value="{{ d.id }}" {{ "checked" if d.id in forecast_device_ids }} class="accent-sky-500"> {{ d.name }}</label>
+        {% else %}
+        <span class="text-xs text-slate-500">制御対象の機器がありません（<a href="{{ url_for('devices') }}" class="underline">制御機器画面</a>で追加してください）</span>
+        {% endfor %}
+      </div>
+      {% if switches and not forecast_device_ids %}<span class="mt-1 block text-xs text-amber-300">対象機器が未設定のため、でんき予報のスケジュールは生成しません。</span>{% endif %}
+      <span class="mt-1 block text-xs text-slate-400">でんき注意報・警報のスケジュールで OFF にする機器です。保存すると、手動で変更していない開始前のスケジュールにも反映します。任意スケジュールの対象機器はルールごとに選びます。</span>
+    </div>
   </fieldset>
 
   <fieldset class="rounded-lg border border-slate-800 p-3">

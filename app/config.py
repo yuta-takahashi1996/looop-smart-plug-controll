@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     max_continuous_off_minutes: int = Field(default=120, ge=0)
     max_daily_off_minutes: int = Field(default=180, ge=0)
     min_switch_interval_minutes: int = Field(default=30, ge=0)
+    # 1つのスケジュールの対象機器の上限（docs/17 §17.6.2）
+    max_devices_per_schedule: int = Field(default=5, ge=1)
     estimated_average_power_w: float = Field(default=150, ge=0)
 
     # Maintenance（docs/10 §10.8）

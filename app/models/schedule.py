@@ -9,10 +9,15 @@ docs/10 §10.9）から展開した ON／OFF の予定で、有効（enabled）�
 import enum
 from datetime import date, datetime, time
 
-from sqlalchemy import Boolean, Date, Enum, Float, ForeignKey, Integer, String, Text, Time
-from sqlalchemy.orm import Mapped, mapped_column
+from typing import TYPE_CHECKING
+
+from sqlalchemy import Boolean, Date, Enum, Float, ForeignKey, Integer, String, Text, Time, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.repositories.database import Base, UTCDateTime
+
+if TYPE_CHECKING:
+    from app.models.device import Device
 
 
 class ScheduleSource(enum.StrEnum):
@@ -40,6 +45,17 @@ class ScheduleStatus(enum.StrEnum):
     DONE = "DONE"  # 終了時刻まで実行した
     ABORTED = "ABORTED"  # 安全制御で途中で ON に戻した、または開始できなかった
     SKIPPED = "SKIPPED"  # 実行しなかった（無効だった、システムが停止していた）
+
+
+class ScheduleDeviceStatus(enum.StrEnum):
+    """スケジュールの機器ごとの実行状態（docs/17 §17.4.5）。"""
+
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    RETURNED = "RETURNED"  # 給電先の残量が下限以下のため ON に戻した（スケジュールは継続中。終了まで OFF に戻さない）
+    DONE = "DONE"
+    ABORTED = "ABORTED"
+    SKIPPED = "SKIPPED"
 
 
 class ChargeModeOption(enum.StrEnum):
@@ -98,19 +114,71 @@ class ControlSchedule(Base):
     status: Mapped[ScheduleStatus] = mapped_column(
         Enum(ScheduleStatus, native_enum=False), default=ScheduleStatus.PENDING
     )
-    # 実行結果（推定節約額の検証用）。実際に OFF にした（Dry Run では OFF にするはずだった）時間帯と、その時間帯の推定節約額
-    executed_start_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
-    executed_end_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    # 実行した時間帯の推定節約額（機器ごとの合計。docs/17 §17.4.5）。実行した時間帯・実測値は schedule_devices に持つ
     executed_saving: Mapped[float | None] = mapped_column(Float, nullable=True)
     status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)  # 中断・スキップの理由
-    # 実測値（制御パラメータ調整の材料）。ポータブル電源の残量を取得できた場合のみ
-    battery_start_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    battery_end_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    measured_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)  # OFF 中の平均消費電力
     # 開始・終了時に設定する充電モード（でんき予報のスケジュールは設定の既定値、任意スケジュールはルールの値）
     charge_mode_start: Mapped[ChargeModeOption] = _charge_mode_column(ChargeModeOption.SILENT)
     charge_mode_end: Mapped[ChargeModeOption] = _charge_mode_column(ChargeModeOption.FAST)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
+
+    # 対象機器と機器ごとの実行結果（docs/17 §17.4.5）
+    devices: Mapped[list["ScheduleDevice"]] = relationship(
+        back_populates="schedule",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ScheduleDevice.id",
+    )
+
+    @property
+    def device_ids(self) -> list[int]:
+        return [d.device_id for d in self.devices]
+
+    def device(self, device_id: int) -> "ScheduleDevice | None":
+        return next((d for d in self.devices if d.device_id == device_id), None)
+
+    @property
+    def executed_start_at(self) -> datetime | None:
+        """いずれかの機器を OFF にした最初の時刻（OFF 時間の制限・集計はスケジュールの時間帯で判定する。docs/17 §17.6.3）。"""
+        starts = [d.executed_start_at for d in self.devices if d.executed_start_at is not None]
+        return min(starts) if starts else None
+
+    @property
+    def executed_end_at(self) -> datetime | None:
+        """すべての機器を ON に戻した時刻。OFF にした機器がまだ OFF 中なら None。"""
+        started = [d for d in self.devices if d.executed_start_at is not None]
+        if not started or any(d.executed_end_at is None for d in started):
+            return None
+        return max(d.executed_end_at for d in started)  # type: ignore[type-var]
+
+
+class ScheduleDevice(Base):
+    """スケジュールの対象機器と機器ごとの実行結果（docs/17 §17.4.5）。"""
+
+    __tablename__ = "schedule_devices"
+    __table_args__ = (UniqueConstraint("schedule_id", "device_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    schedule_id: Mapped[int] = mapped_column(ForeignKey("control_schedules.id", ondelete="CASCADE"), index=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), index=True)
+    status: Mapped[ScheduleDeviceStatus] = mapped_column(
+        Enum(ScheduleDeviceStatus, native_enum=False, length=8), default=ScheduleDeviceStatus.PENDING
+    )
+    status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 実際に OFF にした（Dry Run では OFF にするはずだった）時間帯と、その時間帯の推定節約額
+    executed_start_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    executed_end_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    executed_saving: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 給電先のポータブル電源の実測値（取得できた場合のみ）
+    battery_start_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    battery_end_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    measured_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)  # OFF 中の給電先の出力の平均
+    # 実行時の給電先（devices.id。集計で同じポータブル電源の実測値を重複して数えないため）
+    power_source_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"), nullable=True)
+
+    schedule: Mapped[ControlSchedule] = relationship(back_populates="devices")
+    device: Mapped["Device"] = relationship(foreign_keys=[device_id], lazy="joined")
 
 
 class ScheduleRule(Base):
@@ -134,6 +202,18 @@ class ScheduleRule(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime)
 
+    devices: Mapped[list["ScheduleRuleDevice"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", passive_deletes=True, order_by="ScheduleRuleDevice.device_id"
+    )
+
+    @property
+    def device_ids(self) -> list[int]:
+        return [d.device_id for d in self.devices]
+
+    def set_devices(self, device_ids: list[int]) -> None:
+        current = {d.device_id: d for d in self.devices}
+        self.devices = [current.get(i) or ScheduleRuleDevice(device_id=i) for i in dict.fromkeys(device_ids)]
+
     @property
     def weekday_set(self) -> set[int]:
         return {int(d) for d in (self.weekdays or "").split(",") if d}
@@ -155,6 +235,17 @@ class ScheduleRule(Base):
         if self.repeat_type == RepeatType.WEEKLY:
             return day.weekday() in self.weekday_set
         return True
+
+
+class ScheduleRuleDevice(Base):
+    """任意スケジュールのルールの対象機器（docs/17 §17.4.6）。展開するときに schedule_devices へ写す。"""
+
+    __tablename__ = "schedule_rule_devices"
+
+    rule_id: Mapped[int] = mapped_column(ForeignKey("schedule_rules.id", ondelete="CASCADE"), primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id"), primary_key=True)
+
+    device: Mapped["Device"] = relationship(lazy="joined")
 
 
 class ControlLog(Base):

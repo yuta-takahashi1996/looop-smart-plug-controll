@@ -11,22 +11,29 @@
 任意スケジュール（docs/07 §7.9）：ルール（schedule_rules）を当日・翌日分の ON／OFF スケジュールに展開する。
 予報の有無によらず展開し、でんき予報のスケジュールより優先する（予報のスケジュールは任意スケジュールを避けて作る）。
 任意 OFF にはでんき注意報と同じ制限（運用時間・最大連続OFF時間・1日の最大OFF時間・最低切り替え間隔）を適用する。
+
+対象機器（docs/17 §17.6）：でんき予報のスケジュールは設定の「でんき予報のスケジュールの対象機器」、任意スケジュールは
+ルールの対象機器で作る（制御対象の機器だけ。0台なら作らない）。推定節約額は対象機器ごとの想定平均負荷で算出して合計する。
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.models import device as device_models
+from app.models.device import Device
 from app.models.schedule import (
     ChargeModeOption,
     ControlSchedule,
     EnabledBy,
     RepeatType,
+    ScheduleDevice,
+    ScheduleDeviceStatus,
     ScheduleRule,
     ScheduleSource,
     ScheduleStatus,
@@ -118,6 +125,18 @@ def saving_between(slots: list[PriceSlot], start_at: datetime, end_at: datetime,
     avoided = sum(s.energy_price * w for s, w in zip(slots, weights, strict=True)) * kwh_per_slot
     charge = min(operation_prices) * kwh_per_slot * sum(weights) / params.round_trip_efficiency
     return round(avoided - charge, 1)
+
+
+def device_params(params: PlanParams, device: Device | None) -> PlanParams:
+    """機器の想定平均負荷（未設定なら全体の設定値）で計算するための値（docs/17 §17.7.5）。"""
+    if device is None or device.estimated_power_w is None:
+        return params
+    return replace(params, average_power_w=device.estimated_power_w)
+
+
+def devices_saving(slots: list[PriceSlot], start: int, end: int, params: PlanParams, devices: list[Device]) -> float:
+    """対象機器ごとの推定節約額の合計。"""
+    return round(sum(estimated_saving(slots, start, end, device_params(params, d)) for d in devices), 1)
 
 
 def average_price(slots: list[PriceSlot], start: int, end: int) -> float:
@@ -253,6 +272,16 @@ def _slot_range(schedule: ControlSchedule, tz: ZoneInfo) -> tuple[int, int]:
     )
 
 
+def forecast_devices(session: Session) -> list[Device]:
+    """でんき予報のスケジュールの対象機器（制御対象のものだけ。設定の順）。"""
+    active = {d.id: d for d in device_models.active_switches(session)}
+    return [active[i] for i in device_models.forecast_schedule_device_ids(session) if i in active]
+
+
+def _schedule_devices(devices: list[Device]) -> list[ScheduleDevice]:
+    return [ScheduleDevice(device_id=d.id, status=ScheduleDeviceStatus.PENDING) for d in devices]
+
+
 def schedules_for(session: Session, day: date) -> list[ControlSchedule]:
     return list(
         session.scalars(
@@ -280,7 +309,11 @@ def regenerate(session: Session, settings: Settings, day: date, now: datetime | 
         s.id for s in existing if s not in kept and (forecast.slots or s.source_level == ScheduleSource.CUSTOM)
     ]
     if replaced:
-        session.execute(delete(ControlSchedule).where(ControlSchedule.id.in_(replaced)))
+        # ORM で削除する（対象機器の行も一緒に消し、セッション内に古い行を残さない）
+        for schedule in existing:
+            if schedule.id in replaced:
+                session.delete(schedule)
+        session.flush()
         existing = [s for s in existing if s.id not in replaced]
 
     version = (session.scalar(select(func.max(ControlSchedule.schedule_version)).where(ControlSchedule.schedule_date == day)) or 0) + 1
@@ -290,7 +323,9 @@ def regenerate(session: Session, settings: Settings, day: date, now: datetime | 
         schedule.schedule_version, schedule.updated_at = version, timestamp
         session.add(schedule)
 
-    if forecast.slots:
+    targets = forecast_devices(session)
+    # 対象機器が未設定の場合は、でんき予報のスケジュールを作らない（docs/17 §17.6.1）
+    if forecast.slots and targets:
         planned = kept + custom
         ranges = [_slot_range(s, tz) for s in planned]
         elapsed = sum(1 for slot in forecast.slots if slot.start <= now)
@@ -315,10 +350,11 @@ def regenerate(session: Session, settings: Settings, day: date, now: datetime | 
                     enabled_by=EnabledBy.AUTO,
                     manually_modified=False,
                     reason=describe(forecast.slots, draft),
-                    estimated_saving=estimated_saving(forecast.slots, draft.start, draft.end, params),
+                    estimated_saving=devices_saving(forecast.slots, draft.start, draft.end, params, targets),
                     charge_mode_start=control.charge_mode_start,
                     charge_mode_end=control.charge_mode_end,
                     updated_at=timestamp,
+                    devices=_schedule_devices(targets),
                 )
             )
     session.commit()
@@ -433,9 +469,50 @@ def update_schedule(
             params = PlanParams.from_settings(load_control_settings(session, settings))
             base = _day_start(schedule.schedule_date, tz)
             s, e = int((new_start - base) / SLOT), int((new_end - base) / SLOT)
-            schedule.estimated_saving = estimated_saving(forecast.slots, s, e, params)
+            schedule.estimated_saving = devices_saving(forecast.slots, s, e, params, [d.device for d in schedule.devices])
             schedule.reason = f"{LEVEL_LABELS[schedule.source_level]}（平均 {average_price(forecast.slots, s, e):.1f}円/kWh）・時間を手動変更"
         schedule.start_at, schedule.end_at = new_start, new_end
+    schedule.manually_modified = True
+    schedule.updated_at = datetime.now(UTC)
+    session.commit()
+    return schedule
+
+
+def validate_device_ids(session: Session, settings: Settings, device_ids: list[int]) -> list[str]:
+    """対象機器の検証：制御対象の制御機器から1台以上、上限（MAX_DEVICES_PER_SCHEDULE）以下（docs/17 §17.6）。"""
+    ids = list(dict.fromkeys(device_ids))
+    if not ids:
+        return ["対象機器を1台以上選んでください"]
+    errors = []
+    if len(ids) > settings.max_devices_per_schedule:
+        errors.append(f"対象機器は{settings.max_devices_per_schedule}台までです")
+    active = {d.id for d in device_models.active_switches(session)}
+    if any(i not in active for i in ids):
+        errors.append("制御対象の機器から選んでください")
+    return errors
+
+
+def update_schedule_devices(
+    session: Session, settings: Settings, schedule: ControlSchedule, device_ids: list[int], *, now: datetime | None = None
+) -> ControlSchedule:
+    """開始前のスケジュールの対象機器を変更する（docs/17 §17.6.1）。手動変更済みとし、再生成で上書きしない。"""
+    tz = ZoneInfo(settings.tz)
+    now = now or datetime.now(tz)
+    if schedule.start_at <= now or schedule.status != ScheduleStatus.PENDING:
+        raise ScheduleChangeError(["開始済みのスケジュールの対象機器は変更できません"])
+    errors = validate_device_ids(session, settings, device_ids)
+    if errors:
+        raise ScheduleChangeError(errors)
+    ids = list(dict.fromkeys(device_ids))
+    current = {d.device_id: d for d in schedule.devices}
+    schedule.devices = [current.get(i) or ScheduleDevice(device_id=i, status=ScheduleDeviceStatus.PENDING) for i in ids]
+    session.flush()
+    if schedule.target_state == "OFF":
+        forecast = forecast_service.get_day_forecast(session, settings.looop_area, schedule.schedule_date, tz)
+        if forecast.slots:
+            s, e = _slot_range(schedule, tz)
+            params = PlanParams.from_settings(load_control_settings(session, settings))
+            schedule.estimated_saving = devices_saving(forecast.slots, s, e, params, [session.get(Device, i) for i in ids])
     schedule.manually_modified = True
     schedule.updated_at = datetime.now(UTC)
     session.commit()
@@ -541,9 +618,11 @@ def _expand_rules(
         if s.source_level == ScheduleSource.CUSTOM and s.enabled and s.target_state == "OFF"
     )
     created: list[ControlSchedule] = []
+    active = {d.id: d for d in device_models.active_switches(session)}
     for rule in rules:
         start_at, end_at = rule_range(rule, day, tz)
-        if rule.id in expanded or start_at <= now:
+        targets = [active[i] for i in rule.device_ids if i in active]
+        if rule.id in expanded or start_at <= now or not targets:
             continue
         if _conflicts(start_at, end_at, rule.target_state, existing, params.min_gap_slots * SLOT):
             continue  # 保存時の画面で知らせる（unexpanded_messages）
@@ -562,7 +641,7 @@ def _expand_rules(
         if rule.target_state == "OFF":
             if slots:
                 reason += f"（平均 {average_price(slots, s_index, e_index):.1f}円/kWh）"
-                saving = estimated_saving(slots, s_index, e_index, params)
+                saving = devices_saving(slots, s_index, e_index, params, targets)
             else:
                 reason += "・料金予報が未取得のため推定節約額は未算出"
         if notes:
@@ -582,6 +661,7 @@ def _expand_rules(
                 estimated_saving=saving,
                 charge_mode_start=rule.charge_mode_start,
                 charge_mode_end=rule.charge_mode_end,
+                devices=_schedule_devices(targets),
             )
         )
     return created
@@ -611,6 +691,8 @@ def validate_rule(session: Session, settings: Settings, rule: ScheduleRule, now:
             errors.append("開始時刻は現在より後にしてください")
     if rule.repeat_type == RepeatType.WEEKLY and not rule.weekday_set:
         errors.append("曜日を1つ以上選んでください")
+    if rule.enabled:  # 無効のルール（対象機器が0台になって無効にしたものなど）は対象機器なしでも保存できる
+        errors += validate_device_ids(session, settings, rule.device_ids)
     if errors:
         return errors
     if rule.target_state == "OFF":

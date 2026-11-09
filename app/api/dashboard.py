@@ -17,7 +17,7 @@ from app.providers.base import ForecastLevel
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
 from app.services import optimizer, safety
-from app.services.controller import ChargeModeChange, PlugSnapshot
+from app.services.controller import ChargeModeChange, ControlService, PlugMonitor, PlugSnapshot
 from app.templating import templates
 
 router = APIRouter()
@@ -100,16 +100,25 @@ class ControlSummary:
 
 
 def _executed_saving(session: Session, settings: Settings, schedule: ControlSchedule, now: datetime) -> float:
-    if schedule.executed_saving is not None:
-        return schedule.executed_saving
-    if schedule.status != ScheduleStatus.RUNNING or schedule.executed_start_at is None:
-        return 0.0
-    # 実行中は現在までの分
-    forecast = forecast_service.get_day_forecast(session, settings.looop_area, schedule.schedule_date, ZoneInfo(settings.tz))
-    if not forecast.slots:
-        return 0.0
-    params = optimizer.PlanParams.from_settings(load_control_settings(session, settings))
-    return optimizer.saving_between(forecast.slots, schedule.executed_start_at, now, params)
+    """実行した（実行中は現在までの）推定節約額。機器ごとに算出して合計する（docs/17 §17.7.5）。"""
+    if schedule.status != ScheduleStatus.RUNNING:
+        return schedule.executed_saving or 0.0
+    total = 0.0
+    forecast = None
+    for sd in schedule.devices:
+        if sd.executed_saving is not None:
+            total += sd.executed_saving
+        elif sd.executed_start_at is not None and schedule.target_state == "OFF":
+            if forecast is None:
+                forecast = forecast_service.get_day_forecast(
+                    session, settings.looop_area, schedule.schedule_date, ZoneInfo(settings.tz)
+                )
+            if forecast.slots:
+                params = optimizer.PlanParams.from_settings(load_control_settings(session, settings))
+                total += optimizer.saving_between(
+                    forecast.slots, sd.executed_start_at, now, optimizer.device_params(params, sd.device)
+                )
+    return round(total, 1)
 
 
 def _control_summary(request: Request, session: Session, settings: Settings, now: datetime) -> ControlSummary:
@@ -138,7 +147,40 @@ def _control_summary(request: Request, session: Session, settings: Settings, now
 
 
 @dataclass(frozen=True)
+class DeviceCard:
+    """制御機器ごとのカード（docs/17 §17.10）。"""
+
+    id: int
+    name: str
+    state: str | None  # 制御上の状態（ON / OFF。Dry Run では想定の状態。未確認なら None）
+    mode: str  # GRID / BATTERY / SAFE
+    snapshot: PlugSnapshot  # 実機で最後に確認した状態
+    source_name: str | None  # 給電先のポータブル電源
+
+
+def _device_cards(request: Request) -> list[DeviceCard]:
+    control: ControlService = request.app.state.control
+    monitor: PlugMonitor = request.app.state.plug_monitor
+    cards = []
+    for d in control.devices:
+        source = control.power_source(d.power_source_id)
+        cards.append(
+            DeviceCard(
+                id=d.id,
+                name=d.name,
+                state=d.state.value if d.state else None,
+                mode=d.mode,
+                snapshot=monitor.snapshot(d.id),
+                source_name=source.name if source else None,
+            )
+        )
+    return cards
+
+
+@dataclass(frozen=True)
 class BatterySummary:
+    id: int | None  # 給電先のポータブル電源（devices.id）
+    name: str | None
     configured: bool
     charge_mode: str | None  # 充電モード（FAST / SILENT。Dry Run では想定のモード）
     charge_mode_at: datetime | None  # 実機で最後に確認した時刻
@@ -151,27 +193,37 @@ class BatterySummary:
     min_percent: int
 
 
-def _battery_summary(request: Request, session: Session, settings: Settings, now: datetime) -> BatterySummary:
-    control = request.app.state.control
-    battery = control.battery
-    reading = battery.last
+def _battery_summaries(request: Request, session: Session, settings: Settings) -> list[BatterySummary]:
+    """給電先のポータブル電源ごとのカード（docs/17 §17.10）。"""
+    control: ControlService = request.app.state.control
     limits = load_control_settings(session, settings)
-    eta = None
-    if reading is not None and control.state == PlugState.OFF:
-        power = max(reading.output_w, battery.average_output_w() or 0.0)
-        eta = safety.time_to_min_percent(reading, power, limits)
-    return BatterySummary(
-        configured=battery.configured,
-        charge_mode=control.charge_mode.value if control.charge_mode else None,
-        charge_mode_at=battery.charge_mode_at,
-        charge_change=control.last_charge_change,
-        percent=reading.percent if reading else None,
-        output_w=reading.output_w if reading else None,
-        read_at=reading.at if reading else None,
-        error=battery.last_error,
-        eta=eta,
-        min_percent=limits.battery_min_percent,
-    )
+    summaries = []
+    for source in control.power_sources:
+        battery = source.monitor
+        reading = battery.last
+        eta = None
+        linked_off = any(d.state == PlugState.OFF and d.power_source_id == source.id for d in control.devices)
+        if reading is not None and linked_off:
+            power = max(reading.output_w, battery.average_output_w() or 0.0)
+            eta = safety.time_to_min_percent(reading, power, limits)
+        mode = control.charge_mode_for(source.id)
+        summaries.append(
+            BatterySummary(
+                id=source.id,
+                name=source.name,
+                configured=battery.configured,
+                charge_mode=mode.value if mode else None,
+                charge_mode_at=battery.charge_mode_at,
+                charge_change=control.charge_changes.get(source.id),
+                percent=reading.percent if reading else None,
+                output_w=reading.output_w if reading else None,
+                read_at=reading.at if reading else None,
+                error=battery.last_error,
+                eta=eta,
+                min_percent=limits.battery_min_percent,
+            )
+        )
+    return summaries
 
 
 def _system_status(events: list[SystemEvent]) -> str:
@@ -187,17 +239,18 @@ def status_context(request: Request, session: Session) -> dict:
     settings = get_settings()
     now = datetime.now(ZoneInfo(settings.tz))
     events = unresolved_events(session)
-    plug: PlugSnapshot = request.app.state.plug_monitor.snapshot()
+    request.app.state.control.bind_devices(session)  # 制御機器画面での変更をすぐに表示する
     return {
         "now": now,
         "tz": ZoneInfo(settings.tz),
         "prices": _price_summary(session, settings, now, get_price_view(request)),
-        "plug": plug,
+        "device_cards": _device_cards(request),
+        "plug_configured": request.app.state.plug_monitor.configured,
         "events": events,
         "system_status": _system_status(events),
         "control": _control_summary(request, session, settings, now),
         "control_mode": request.app.state.control.control_mode.value,
-        "battery": _battery_summary(request, session, settings, now),
+        "batteries": _battery_summaries(request, session, settings),
         **_schedule_summary(session, now),
     }
 

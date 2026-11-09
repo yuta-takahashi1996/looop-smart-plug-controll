@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import threading
 from datetime import date, datetime, time, timedelta
 
 import httpx
@@ -19,6 +20,7 @@ from app.clients.switchbot import (
     build_auth_headers,
 )
 from app.config import get_settings
+from app.models import device as device_models
 from app.models.schedule import (
     ChargeModeOption,
     ControlLog,
@@ -27,10 +29,11 @@ from app.models.schedule import (
     ControlSource,
     PlugState,
     RepeatType,
+    ScheduleDeviceStatus,
     ScheduleRule,
     ScheduleStatus,
 )
-from app.models.settings import EventCategory, SystemEvent, set_value, unresolved_events
+from app.models.settings import EventCategory, SystemEvent, load_control_settings, set_value, unresolved_events
 from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.repositories.database import SessionLocal
 from app.services import forecast as forecast_service
@@ -38,6 +41,8 @@ from app.services import optimizer
 from app.services import safety
 from app.services.controller import LEGACY_CHARGE_MODE_SCHEDULE_KEY, BatteryMonitor, ControlService, PlugMonitor
 from tests.conftest import JST
+
+pytestmark = pytest.mark.usefixtures("default_devices")
 
 # --- SwitchBot クライアント ---
 
@@ -157,14 +162,14 @@ class FakeSwitchBot:
         self.results: list[switchbot.PlugStatus | Exception] = []
         self.calls = 0
 
-    def get_status(self) -> switchbot.PlugStatus:
+    def get_status(self, device_id: str | None = None) -> switchbot.PlugStatus:
         self.calls += 1
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
         return result
 
-    def send_power_command(self, state: str) -> None:
+    def send_power_command(self, state: str, device_id: str | None = None) -> None:
         raise AssertionError("監視ではコマンドを送信しない")
 
 
@@ -172,16 +177,21 @@ def _status(power: str) -> switchbot.PlugStatus:
     return switchbot.PlugStatus(power=power, device_type="Plug Mini (JP)", raw={})  # type: ignore[arg-type]
 
 
+def _plug_id(session: Session) -> int:
+    return device_models.active_switches(session)[0].id
+
+
 def test_monitor_keeps_latest_status(session: Session) -> None:
     fake = FakeSwitchBot()
     fake.results = [_status("ON"), _status("OFF")]
     monitor = PlugMonitor(fake, SessionLocal)  # type: ignore[arg-type]
+    plug = _plug_id(session)
 
-    assert monitor.snapshot().status is None  # 確認前は未確認
+    assert monitor.snapshot(plug).status is None  # 確認前は未確認
     monitor.refresh()
-    assert monitor.snapshot().status.power == "ON"
+    assert monitor.snapshot(plug).status.power == "ON"
     monitor.refresh()
-    snapshot = monitor.snapshot()
+    snapshot = monitor.snapshot(plug)
     assert snapshot.status.power == "OFF"
     assert snapshot.error is None
     assert snapshot.checked_at is not None
@@ -192,19 +202,22 @@ def test_monitor_records_error_once_and_resolves_on_recovery(session: Session) -
     error = SwitchBotError("デバイスがオフラインです")
     fake.results = [_status("ON"), error, error, _status("ON")]
     monitor = PlugMonitor(fake, SessionLocal)  # type: ignore[arg-type]
+    plug = _plug_id(session)
 
     monitor.refresh()
     monitor.refresh()
     # 失敗時は古い状態を現在の状態として残さない
-    assert monitor.snapshot().status is None
-    assert monitor.snapshot().error == "デバイスがオフラインです"
+    assert monitor.snapshot(plug).status is None
+    assert monitor.snapshot(plug).error == "デバイスがオフラインです"
     monitor.refresh()
-    assert [e.category for e in unresolved_events(session)] == [EventCategory.SWITCHBOT]  # 同じエラーは1回だけ
+    events = unresolved_events(session)
+    assert [(e.category, e.device_id) for e in events] == [(EventCategory.SWITCHBOT, plug)]  # 同じエラーは1回だけ
+    assert events[0].message.startswith("リビングのプラグ：")
 
     monitor.refresh()
     session.expire_all()
     assert unresolved_events(session) == []
-    assert monitor.snapshot().status.power == "ON"
+    assert monitor.snapshot(plug).status.power == "ON"
 
 
 def test_monitor_without_credentials_does_not_call_api(session: Session) -> None:
@@ -212,7 +225,7 @@ def test_monitor_without_credentials_does_not_call_api(session: Session) -> None
     fake.configured = False
     monitor = PlugMonitor(fake, SessionLocal)  # type: ignore[arg-type]
 
-    snapshot = monitor.refresh()
+    snapshot = monitor.refresh()[_plug_id(session)]
 
     assert fake.calls == 0
     assert snapshot.status is None
@@ -346,6 +359,7 @@ def _custom_rule(session: Session, state: str, start: int, end: int) -> None:
     rule = ScheduleRule(
         name=f"任意{state}", target_state=state, repeat_type=RepeatType.DAILY, start_time=time(start), end_time=time(end), enabled=True
     )
+    rule.set_devices(device_models.forecast_schedule_device_ids(session))
     optimizer.save_rule(session, get_settings(), rule, now=datetime.combine(DAY, time(), tzinfo=JST) - timedelta(hours=1))
 
 
@@ -458,12 +472,12 @@ class FakePlug:
         self.ignore_commands = False  # コマンドを無視する（状態が変わらない）
         self.status_error = False  # 状態取得に失敗する
 
-    def get_status(self) -> switchbot.PlugStatus:
+    def get_status(self, device_id: str | None = None) -> switchbot.PlugStatus:
         if self.status_error:
             raise SwitchBotError("デバイスがオフラインです")
         return switchbot.PlugStatus(power=self.power, device_type="Plug Mini (JP)", raw={})  # type: ignore[arg-type]
 
-    def send_power_command(self, state: str) -> None:
+    def send_power_command(self, state: str, device_id: str | None = None) -> None:
         assert state in ("ON", "OFF")  # toggle は使わない
         self.commands.append(state)
         if not self.ignore_commands:
@@ -544,7 +558,8 @@ def test_startup_keeps_plug_state_during_off_schedule(session: Session) -> None:
     control = _real_control(plug)
     _prepare(session, {range(20, 22): A})
     s = _schedules(session)[0]
-    s.status, s.executed_start_at = ScheduleStatus.RUNNING, _at(10)
+    s.status = ScheduleStatus.RUNNING
+    s.devices[0].status, s.devices[0].executed_start_at = ScheduleDeviceStatus.RUNNING, _at(10)
     session.commit()
 
     control.initialize(_at(10, 20))  # OFF のスケジュールの実行中に再起動した
@@ -680,8 +695,14 @@ def test_schedule_is_not_started_when_battery_projection_is_low(session: Session
     control.run_cycle(_at(10))
 
     assert plug.commands == []
+    # 残量が下限を下回る見込みの機器は開始せず RETURNED とし、スケジュールは中断しない（docs/17 §17.7.3）
     s = _schedules(session)[0]
-    assert s.status == ScheduleStatus.ABORTED and "下限" in s.status_reason
+    assert s.status == ScheduleStatus.RUNNING
+    assert s.devices[0].status == ScheduleDeviceStatus.RETURNED and "下限" in s.devices[0].status_reason
+    control.run_cycle(_at(12))
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.DONE
+    assert s.devices[0].status == ScheduleDeviceStatus.DONE and "開始しませんでした" in s.devices[0].status_reason
 
 
 def test_running_schedule_is_stopped_before_battery_runs_out(session: Session) -> None:
@@ -697,8 +718,20 @@ def test_running_schedule_is_stopped_before_battery_runs_out(session: Session) -
 
     assert plug.commands == ["OFF", "ON"]
     assert _results(session)[-1][0] == "SAFETY"
+    session.expire_all()
+    last = session.scalars(select(ControlLog).order_by(ControlLog.id.desc())).first()
+    assert last.reason.startswith("Jackery 1000 Newの残量が下限以下のため ON に戻す")
     s = _schedules(session)[0]
-    assert s.status == ScheduleStatus.ABORTED and "下限" in s.status_reason
+    assert s.status == ScheduleStatus.RUNNING  # スケジュールは中断しない
+    assert s.devices[0].status == ScheduleDeviceStatus.RETURNED
+    assert s.devices[0].executed_end_at == _at(10, 5)
+
+    control.run_cycle(_at(10, 30))  # 回復しても終了まで OFF に戻さない（D-9）
+    assert plug.commands == ["OFF", "ON"]
+    control.run_cycle(_at(12))
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.DONE
+    assert s.devices[0].status_reason == "残量低下のため 10:05 に ON に戻した"
 
 
 def test_warning_runs_outside_operation_hours_when_battery_known(session: Session) -> None:
@@ -725,8 +758,10 @@ def test_measured_values_are_recorded_per_schedule(session: Session) -> None:
 
     s = _schedules(session)[0]
     assert s.status == ScheduleStatus.DONE
-    assert (s.battery_start_percent, s.battery_end_percent) == (90, 85)
-    assert s.measured_power_w == pytest.approx((150 + 170 + 160 + 150) / 4, abs=0.1)
+    row = s.devices[0]
+    assert (row.battery_start_percent, row.battery_end_percent) == (90, 85)
+    assert row.measured_power_w == pytest.approx((150 + 170 + 160 + 150) / 4, abs=0.1)
+    assert row.power_source_id is not None
 
 
 # --- 充電モード（docs/07 §7.10）：スケジュールの開始時に静かな充電、終了時に高速充電 ---
@@ -939,3 +974,199 @@ def test_manual_charge_mode_requires_jackery(session: Session) -> None:
 
     with pytest.raises(ValueError, match="Jackery"):
         control.manual_charge_mode(ChargeMode.SILENT)
+
+
+# --- 複数機器（Phase 10、docs/17 §17.7） ---
+
+
+class MultiPlug:
+    """機器ごとの状態を持つ SwitchBot の模擬。broken の機器はコマンドに反応しない。"""
+
+    credentials_configured = True
+
+    def __init__(self, barrier: threading.Barrier | None = None) -> None:
+        self.power: dict[str, str] = {}
+        self.commands: list[tuple[str, str]] = []
+        self.broken: set[str] = set()
+        self.unreachable: set[str] = set()
+        self.barrier = barrier
+        self._lock = threading.Lock()
+
+    def get_status(self, device_id: str | None = None) -> switchbot.PlugStatus:
+        if device_id in self.unreachable:
+            raise SwitchBotError("デバイスがオフラインです")
+        return switchbot.PlugStatus(power=self.power.get(device_id, "ON"), device_type="Plug Mini (JP)", raw={})  # type: ignore[arg-type]
+
+    def send_power_command(self, state: str, device_id: str | None = None) -> None:
+        assert state in ("ON", "OFF")
+        if self.barrier is not None:
+            self.barrier.wait()  # 並行して送信していなければ待ちきれずに失敗する
+        with self._lock:
+            self.commands.append((device_id, state))
+        if device_id not in self.broken:
+            self.power[device_id] = state
+
+
+def _second_plug(session: Session, *, battery: bool = False, forecast: bool = True) -> int:
+    from tests.conftest import register_plug
+
+    return register_plug(session, "PLUG2", "書斎のプラグ", battery=battery, forecast=forecast).id
+
+
+def _multi_control(plug: MultiPlug, battery: BatteryMonitor | None = None) -> ControlService:
+    settings = get_settings().model_copy(update={"dry_run": False})
+    control = ControlService(settings, SessionLocal, switchbot=plug, battery=battery, sleep=lambda _: None)  # type: ignore[arg-type]
+    control.set_real_control(True)
+    return control
+
+
+def _device_logs(session: Session) -> list[tuple[str, str, str]]:
+    session.expire_all()
+    names = {d.id: d.external_id for d in device_models.active_switches(session)}
+    return [
+        (names[log.device_id], log.requested_state.value, log.result.value)
+        for log in session.scalars(select(ControlLog).order_by(ControlLog.id))
+    ]
+
+
+def test_schedule_controls_all_target_devices(session: Session, control: ControlService) -> None:
+    _second_plug(session)
+    _prepare(session, {range(34, 36): A})  # 17:00〜18:00
+
+    for t in [_at(16, 59), _at(17), _at(18)]:
+        control.run_cycle(t)
+
+    assert _device_logs(session) == [
+        ("PLUG1", "ON", "DRY_RUN"),
+        ("PLUG2", "ON", "DRY_RUN"),
+        ("PLUG1", "OFF", "DRY_RUN"),
+        ("PLUG2", "OFF", "DRY_RUN"),
+        ("PLUG1", "ON", "DRY_RUN"),
+        ("PLUG2", "ON", "DRY_RUN"),
+    ]
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.DONE
+    assert [d.status for d in s.devices] == [ScheduleDeviceStatus.DONE] * 2
+    assert s.executed_saving == pytest.approx(sum(d.executed_saving for d in s.devices))
+
+
+def test_device_not_in_schedule_is_not_switched(session: Session, control: ControlService) -> None:
+    _second_plug(session, forecast=False)  # でんき予報のスケジュールの対象外
+    _prepare(session, {range(34, 36): A})
+
+    for t in [_at(16, 59), _at(17)]:
+        control.run_cycle(t)
+
+    assert ("PLUG2", "OFF", "DRY_RUN") not in _device_logs(session)
+    assert control.device_state(device_models.find_device(session, device_models.Vendor.SWITCHBOT, "PLUG2").id) == PlugState.ON
+
+
+def test_commands_are_sent_in_parallel(session: Session) -> None:
+    _second_plug(session)
+    plug = MultiPlug(barrier=threading.Barrier(2, timeout=2))
+    control = _multi_control(plug)
+    _prepare(session, {range(20, 22): A})
+
+    control.run_cycle(_at(10))  # 2台とも ON のため初期化は送信しない → OFF を2台並行して送信
+
+    assert sorted(plug.commands) == [("PLUG1", "OFF"), ("PLUG2", "OFF")]
+
+
+def test_failure_of_one_device_does_not_affect_others(session: Session) -> None:
+    second = _second_plug(session)
+    plug = MultiPlug()
+    plug.broken.add("PLUG1")  # PLUG1 は OFF にならない
+    control = _multi_control(plug)
+    _prepare(session, {range(20, 22): A})
+
+    control.run_cycle(_at(10))
+
+    assert plug.power == {"PLUG2": "OFF"}
+    assert ("PLUG2", "OFF", "SUCCESS") in _device_logs(session)
+    assert ("PLUG1", "OFF", "FAILED") in _device_logs(session)
+    events = unresolved_events(session)
+    assert [e.device_id for e in events if e.category == EventCategory.SWITCHBOT] == [_plug_id(session)]
+    assert control.device_state(second) == PlugState.OFF
+
+    control.run_cycle(_at(10, 1))  # 失敗した要求は5分間繰り返さない（機器ごと）
+    assert plug.commands.count(("PLUG1", "OFF")) == 2  # 1回の要求で送り直しを含めて2回
+
+
+def test_unreachable_device_is_initialized_alone_at_startup(session: Session) -> None:
+    _second_plug(session)
+    plug = MultiPlug()
+    plug.power = {"PLUG1": "OFF", "PLUG2": "OFF"}
+    plug.unreachable.add("PLUG2")
+    control = _multi_control(plug)
+
+    control.initialize(_at(10))
+
+    assert control.device_state(_plug_id(session)) == PlugState.OFF  # 取得できた機器は引き継ぐ
+    assert _device_logs(session) == [("PLUG2", "ON", "UNCONFIRMED")]  # 取得できない機器だけ ON に初期化
+
+
+def test_low_battery_returns_only_linked_devices(session: Session) -> None:
+    """残量の下限で、そのポータブル電源に紐づく機器だけ ON に戻し、スケジュールは続ける（docs/17 §17.7.3）。"""
+    second = _second_plug(session, battery=False)  # 給電先なし → OFF 時間の制限で保護
+    plug = MultiPlug()
+    battery = FakeBattery([(50, 150.0), (6, 150.0)])
+    control = _multi_control(plug, battery)
+    _prepare(session, {range(20, 24): A})  # 10:00〜12:00
+
+    control.run_cycle(_at(10))
+    control.run_cycle(_at(10, 5))  # 6%：PLUG1 の給電先が下限を下回る見込み
+
+    assert plug.power == {"PLUG1": "ON", "PLUG2": "OFF"}
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.RUNNING
+    rows = {d.device_id: d for d in s.devices}
+    assert rows[_plug_id(session)].status == ScheduleDeviceStatus.RETURNED
+    assert rows[second].status == ScheduleDeviceStatus.RUNNING
+
+    control.run_cycle(_at(12))
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.DONE
+    assert [d.status for d in s.devices] == [ScheduleDeviceStatus.DONE] * 2
+    assert plug.power == {"PLUG1": "ON", "PLUG2": "ON"}
+
+
+def test_saving_uses_estimated_power_of_each_device(session: Session, control: ControlService) -> None:
+    second = _second_plug(session)
+    device = session.get(device_models.Device, second)
+    device.estimated_power_w = 300  # 既定値（150W）の2倍
+    session.commit()
+    schedules = _prepare(session, {range(34, 36): A})
+
+    s = schedules[0]
+    params = optimizer.PlanParams.from_settings(load_control_settings(session, get_settings()))
+    forecast = forecast_service.get_day_forecast(session, "hokkaido", DAY, JST)
+    single = optimizer.estimated_saving(forecast.slots, 34, 36, params)
+    assert s.estimated_saving == pytest.approx(single * 3, abs=0.2)
+
+
+def test_manual_operation_on_one_device_stops_all_auto_control(session: Session) -> None:
+    second = _second_plug(session)
+    plug = MultiPlug()
+    control = _multi_control(plug)
+    _prepare(session, {range(20, 24): A})
+    control.run_cycle(_at(10))  # 2台 OFF
+
+    control.manual_power(PlugState.ON, _at(10, 10), device_id=second)
+
+    assert control.control_mode == "MANUAL"
+    assert plug.power == {"PLUG1": "OFF", "PLUG2": "ON"}  # 手動操作していない機器はそのまま（手動 OFF として保護）
+    s = _schedules(session)[0]
+    assert s.status == ScheduleStatus.ABORTED
+    assert {d.status for d in s.devices} == {ScheduleDeviceStatus.ABORTED}
+
+
+def test_charge_mode_is_sent_to_power_sources_of_target_devices(session: Session) -> None:
+    _second_plug(session, battery=False)
+    battery = ChargeBattery()
+    control = _multi_control(MultiPlug(), battery)
+    _prepare(session, {range(20, 22): A})
+
+    control.run_cycle(_at(10))
+    control.run_cycle(_at(11))
+
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]  # 給電先（1台）にだけ送る

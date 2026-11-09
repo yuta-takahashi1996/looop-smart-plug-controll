@@ -19,7 +19,7 @@ from sqlalchemy import Boolean, Enum, Float, ForeignKey, Integer, String, Text, 
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.config import Settings
-from app.models.schedule import ControlLog
+from app.models.schedule import ControlLog, ControlSchedule, ScheduleDevice, ScheduleDeviceStatus, ScheduleRule
 from app.models.settings import get_value, load_control_settings, set_value
 from app.repositories.database import Base, UTCDateTime
 
@@ -333,8 +333,17 @@ def migrate_legacy_devices(
             )
             session.add(plug)
             session.flush()
-            # 機器の登録前の制御履歴は、この1台の操作として関連付ける
+            # 機器の登録前の制御履歴・スケジュール・ルールは、この1台のものとして関連付ける
             session.execute(update(ControlLog).where(ControlLog.device_id.is_(None)).values(device_id=plug.id))
+            for schedule in session.scalars(select(ControlSchedule).where(~ControlSchedule.devices.any())):
+                status = (
+                    ScheduleDeviceStatus(schedule.status.value)
+                    if schedule.status.value in ScheduleDeviceStatus.__members__
+                    else ScheduleDeviceStatus.PENDING
+                )
+                schedule.devices = [ScheduleDevice(device_id=plug.id, status=status)]
+            for rule in session.scalars(select(ScheduleRule).where(~ScheduleRule.devices.any())):
+                rule.set_devices([plug.id])
             if get_value(session, FORECAST_SCHEDULE_DEVICES_KEY) is None:
                 set_forecast_schedule_device_ids(session, [plug.id])
 

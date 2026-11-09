@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.auth import CSRF_FORM_FIELD, verify_csrf
 from app.api.control import REAL_CONTROL_CONFIRMATION
 from app.config import get_settings
+from app.models import device as device_models
 from app.models.forecast import AdjustmentCategory, PriceAdjustment
 from app.models.schedule import ChargeModeOption
 from app.models.settings import ControlSettings, load_control_settings, save_control_settings
@@ -153,10 +154,16 @@ def _render(
     flash_message: str | None = None,
     flash_error: str | None = None,
     status_code: int = status.HTTP_200_OK,
+    forecast_device_ids: list[int] | None = None,
 ) -> HTMLResponse:
     settings = get_settings()
     control = load_control_settings(session, settings)
     context: dict[str, Any] = {
+        "switches": device_models.active_switches(session),
+        "forecast_device_ids": (
+            device_models.forecast_schedule_device_ids(session) if forecast_device_ids is None else forecast_device_ids
+        ),
+        "max_devices": settings.max_devices_per_schedule,
         "groups": GROUPS,
         "charge_mode_fields": CHARGE_MODE_FIELDS,
         "charge_mode_choices": CHARGE_MODE_CHOICES,
@@ -198,19 +205,30 @@ def settings_page(
 
 @router.post("/settings", response_class=HTMLResponse, dependencies=[Depends(verify_csrf)])
 async def update_settings(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-    form = {key: value for key, value in (await request.form()).items() if isinstance(value, str)}
+    raw = await request.form()
+    form = {key: value for key, value in raw.items() if isinstance(value, str)}
     form.pop(CSRF_FORM_FIELD, None)
+    # でんき予報のスケジュールの対象機器（docs/17 §17.6.1）。0台なら、でんき予報のスケジュールを作らない
+    device_ids = list(dict.fromkeys(int(v) for v in raw.getlist("forecast_device_ids") if isinstance(v, str) and v.isdigit()))
+    device_errors = optimizer.validate_device_ids(session, get_settings(), device_ids) if device_ids else []
     try:
         data = _parse_form(form)
     except ValidationError as exc:
+        data, errors = None, _error_messages(exc)
+    else:
+        errors = []
+    errors += [f"でんき予報のスケジュールの対象機器：{e}" for e in device_errors]
+    if data is None or errors:
         return _render(
             request,
             session,
             {key: form.get(key, "") for key in _LABELS} | {"auto_enable": form.get("auto_enable", "")},
-            errors=_error_messages(exc),
+            errors=errors,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            forecast_device_ids=device_ids,
         )
     save_control_settings(session, data)
+    device_models.set_forecast_schedule_device_ids(session, device_ids)
     # 変更した条件を、手動で変更していない未開始のスケジュールへ反映する
     today = datetime.now(ZoneInfo(get_settings().tz)).date()
     optimizer.regenerate_days(session, get_settings(), [today, today + timedelta(days=1)])

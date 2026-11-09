@@ -14,9 +14,13 @@ from app.models.settings import SystemEvent
 from app.providers.base import ForecastFetchError, Notice
 from app.clients.jackery import ChargeMode
 from app.repositories.database import SessionLocal
-from app.services.controller import BatteryMonitor, PlugSnapshot
+from app.config import get_settings
+from app.models import device as device_models
+from app.services.controller import BatteryMonitor, ControlService, PlugSnapshot
 from app.services.forecast import check_price_notices
 from tests.conftest import JST, TEST_PASSWORD, FakeProvider, csrf_token
+
+pytestmark = pytest.mark.usefixtures("default_devices")
 
 PAGES = [
     ("/", "ダッシュボード"),
@@ -492,9 +496,21 @@ def test_errors_cannot_be_resolved_manually(logged_in_client: TestClient, provid
     assert session.get(SystemEvent, event_id).resolved_at is None
 
 
+def _plug_id() -> int:
+    with SessionLocal() as db_session:
+        return device_models.active_switches(db_session)[0].id
+
+
+def _source_id() -> int:
+    with SessionLocal() as db_session:
+        return device_models.portable_powers(db_session)[0].id
+
+
 def test_dashboard_shows_plug_status(logged_in_client: TestClient) -> None:
     class Monitor:
-        def snapshot(self) -> PlugSnapshot:
+        configured = True
+
+        def snapshot(self, device_id: int) -> PlugSnapshot:
             return PlugSnapshot(
                 status=PlugStatus(power="OFF", device_type="Plug Mini (JP)", raw={}),
                 checked_at=datetime.now(UTC),
@@ -505,8 +521,9 @@ def test_dashboard_shows_plug_status(logged_in_client: TestClient) -> None:
 
     text = logged_in_client.get("/").text
 
-    assert "OFF（蓄電池）" in text
-    assert "確認" in text
+    assert "リビングのプラグ" in text
+    assert "実機 OFF" in text and "確認" in text
+    assert "給電先：Jackery 1000 New" in text
 
 
 def test_dashboard_shows_unconfirmed_plug_status(logged_in_client: TestClient) -> None:
@@ -514,7 +531,7 @@ def test_dashboard_shows_unconfirmed_plug_status(logged_in_client: TestClient) -
     text = logged_in_client.get("/").text
 
     assert "未確認" in text
-    assert "ON（商用電源）" not in text.split("プラグの状態")[1].split("</dd>")[0]
+    assert "実機 ON" not in text.split(">制御機器<")[1].split("</section>")[0]
 
 
 # --- 運転スケジュール（Phase 4） ---
@@ -627,7 +644,14 @@ def test_auto_enable_setting_enables_advisory(logged_in_client: TestClient, sess
 
     response = logged_in_client.post(
         "/settings",
-        data={**VALID_SETTINGS, "operation_start": "09:00", "operation_end": "18:00", "auto_enable": "on", "csrf_token": csrf_token(logged_in_client)},
+        data={
+            **VALID_SETTINGS,
+            "operation_start": "09:00",
+            "operation_end": "18:00",
+            "auto_enable": "on",
+            "forecast_device_ids": [str(_plug_id())],
+            "csrf_token": csrf_token(logged_in_client),
+        },
         headers={"HX-Request": "true"},
     )
 
@@ -666,6 +690,7 @@ def _post_rule(client: TestClient, path: str = "/schedule/rules", **fields) -> R
         "end": "11:00",
         "day": "tomorrow",
         "csrf_token": csrf_token(client),
+        "device_ids": [str(_plug_id())],
         **fields,
     }
     return client.post(path, data=data, follow_redirects=False)
@@ -694,6 +719,7 @@ def test_create_weekly_on_rule(logged_in_client: TestClient, session) -> None:
             "start": "19:00",
             "end": "00:00",
             "day": "tomorrow",
+            "device_ids": [str(_plug_id())],
             "csrf_token": csrf_token(logged_in_client),
         },
         follow_redirects=False,
@@ -712,6 +738,7 @@ def test_create_weekly_on_rule(logged_in_client: TestClient, session) -> None:
         ({"target_date": "x"}, "YYYY-MM-DD"),
         ({"name": " "}, "名前を入力"),
         ({"repeat_type": "WEEKLY"}, "曜日を1つ以上"),
+        ({"device_ids": []}, "対象機器を1台以上"),
     ],
 )
 def test_custom_rule_validation_errors(logged_in_client: TestClient, session, fields: dict, message: str) -> None:
@@ -816,11 +843,11 @@ def _post(client: TestClient, path: str, **data: str) -> Response:
 
 
 def test_manual_power_switches_to_manual_mode(logged_in_client: TestClient, session) -> None:
-    response = _post(logged_in_client, "/control/plug/off")
+    response = _post(logged_in_client, f"/control/devices/{_plug_id()}/off")
 
     assert response.status_code == 303
     text = logged_in_client.get(response.headers["location"]).text
-    assert "プラグを OFF にしました" in text and "Dry Run" in text
+    assert "リビングのプラグ を OFF にしました" in text and "Dry Run" in text
     assert "MANUAL" in text
     session.expire_all()
     log = session.scalars(select(ControlLog).order_by(ControlLog.id.desc())).first()
@@ -840,7 +867,7 @@ def test_stop_and_start_auto_control(logged_in_client: TestClient) -> None:
 
 
 def test_manual_operations_require_csrf(logged_in_client: TestClient) -> None:
-    assert logged_in_client.post("/control/plug/off").status_code == 403
+    assert logged_in_client.post(f"/control/devices/{_plug_id()}/off").status_code == 403
     assert logged_in_client.post("/control/auto/stop").status_code == 403
     assert app.state.control.control_mode == "AUTO"
 
@@ -885,14 +912,15 @@ class _ConfiguredBattery(BatteryMonitor):
 
 
 def test_charge_mode_buttons_on_dashboard(logged_in_client: TestClient) -> None:
-    app.state.control.battery = _ConfiguredBattery()
+    app.state.control = ControlService(get_settings(), SessionLocal, battery=_ConfiguredBattery())
+    source = _source_id()
     text = logged_in_client.get("/").text
 
     assert "充電モード" in text
-    assert '/control/charge-mode/fast"' in text and '/control/charge-mode/silent"' in text
+    assert f'/control/charge-mode/{source}/fast"' in text and f'/control/charge-mode/{source}/silent"' in text
     assert "超急速" not in text  # 超急速充電は扱わない
 
-    response = _post(logged_in_client, "/control/charge-mode/silent")
+    response = _post(logged_in_client, f"/control/charge-mode/{source}/silent")
 
     text = logged_in_client.get(response.headers["location"]).text
     assert "充電モードを静かな充電にしました（Dry Run：コマンドは送信していません）" in text
@@ -901,13 +929,14 @@ def test_charge_mode_buttons_on_dashboard(logged_in_client: TestClient) -> None:
 
 
 def test_charge_mode_requires_jackery_and_csrf(logged_in_client: TestClient) -> None:
+    source = _source_id()
     text = logged_in_client.get("/").text
-    assert '/control/charge-mode/silent"' not in text  # 未設定ならボタンを出さない
+    assert f'/control/charge-mode/{source}/silent"' not in text  # 未設定ならボタンを出さない
 
-    response = _post(logged_in_client, "/control/charge-mode/silent")
+    response = _post(logged_in_client, f"/control/charge-mode/{source}/silent")
     assert "充電モードを変更できません" in logged_in_client.get(response.headers["location"]).text
-    assert logged_in_client.post("/control/charge-mode/silent").status_code == 403
-    assert _post(logged_in_client, "/control/charge-mode/turbo").status_code == 422
+    assert logged_in_client.post(f"/control/charge-mode/{source}/silent").status_code == 403
+    assert _post(logged_in_client, f"/control/charge-mode/{source}/turbo").status_code == 422
 
 
 # --- 運用改善（Phase 7） ---
@@ -915,10 +944,10 @@ def test_charge_mode_requires_jackery_and_csrf(logged_in_client: TestClient) -> 
 
 def test_refresh_status_buttons(logged_in_client: TestClient) -> None:
     response = _post(logged_in_client, "/control/refresh/plug")
-    assert "プラグの状態を取得できませんでした" in logged_in_client.get(response.headers["location"]).text
+    assert "制御機器の状態：取得できませんでした" in logged_in_client.get(response.headers["location"]).text
 
     response = _post(logged_in_client, "/control/refresh/battery")
-    assert "ポータブル電源の状態を取得できませんでした" in logged_in_client.get(response.headers["location"]).text
+    assert "ポータブル電源の状態：取得できませんでした" in logged_in_client.get(response.headers["location"]).text
 
     assert logged_in_client.post("/control/refresh/plug").status_code == 403
 
@@ -978,6 +1007,7 @@ def test_settings_charge_mode_defaults_apply_to_generated_schedules(logged_in_cl
             "operation_end": "18:00",
             "charge_mode_start": "KEEP",
             "charge_mode_end": "SILENT",
+            "forecast_device_ids": [str(_plug_id())],
             "csrf_token": csrf_token(logged_in_client),
         },
         headers={"HX-Request": "true"},
@@ -1060,3 +1090,110 @@ def test_schedule_page_shows_price_chart(logged_in_client: TestClient) -> None:
         follow_redirects=False,
     )
     assert response.headers["location"] == "/schedule?day=tomorrow"
+
+
+# --- 複数機器（Phase 10、docs/17 §17.6） ---
+
+
+def _register_second_plug() -> int:
+    from tests.conftest import register_plug
+
+    with SessionLocal() as db_session:
+        return register_plug(db_session, "PLUG2", "書斎のプラグ", battery=False, forecast=False).id
+
+
+def test_forecast_schedule_devices_setting(logged_in_client: TestClient, session) -> None:
+    second = _register_second_plug()
+    _fetch(logged_in_client)
+    assert all(s.device_ids == [_plug_id()] for s in _tomorrow_schedules(session))
+
+    def save(ids: list[int]) -> Response:
+        return logged_in_client.post(
+            "/settings",
+            data={**VALID_SETTINGS, "forecast_device_ids": [str(i) for i in ids], "csrf_token": csrf_token(logged_in_client)},
+            headers={"HX-Request": "true"},
+        )
+
+    assert save([_plug_id(), second]).status_code == 200
+    session.expire_all()
+    assert [s.device_ids for s in _tomorrow_schedules(session)] == [[_plug_id(), second]] * 2
+    assert "書斎のプラグ" in logged_in_client.get("/settings").text
+
+    # 0台にすると、でんき予報のスケジュールは生成しない
+    save([])
+    session.expire_all()
+    assert _tomorrow_schedules(session) == []
+    assert "対象機器が未設定のため" in logged_in_client.get("/schedule?day=tomorrow").text
+
+
+def test_schedule_devices_can_be_changed_before_start(logged_in_client: TestClient, session) -> None:
+    second = _register_second_plug()
+    _fetch(logged_in_client)
+    schedule = _tomorrow_schedules(session)[0]
+    before = schedule.estimated_saving
+
+    response = logged_in_client.post(
+        f"/schedule/{schedule.id}/devices",
+        data={"device_ids": [str(_plug_id()), str(second)], "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+
+    assert response.headers["location"] == "/schedule?day=tomorrow&updated=devices"
+    session.expire_all()
+    schedule = session.get(ControlSchedule, schedule.id)
+    assert schedule.device_ids == [_plug_id(), second] and schedule.manually_modified
+    assert schedule.estimated_saving == pytest.approx(before * 2, abs=0.2)  # 想定平均負荷が同じ2台分
+    text = logged_in_client.get("/schedule?day=tomorrow").text
+    assert "書斎のプラグ" in text
+
+    response = logged_in_client.post(
+        f"/schedule/{schedule.id}/devices", data={"csrf_token": csrf_token(logged_in_client)}, follow_redirects=False
+    )
+    assert response.status_code == 422 and "対象機器を1台以上" in response.text
+
+
+def test_schedule_devices_are_limited(logged_in_client: TestClient, session, monkeypatch) -> None:
+    second = _register_second_plug()
+    _fetch(logged_in_client)
+    schedule = _tomorrow_schedules(session)[0]
+    monkeypatch.setattr(get_settings(), "max_devices_per_schedule", 1)
+
+    response = logged_in_client.post(
+        f"/schedule/{schedule.id}/devices",
+        data={"device_ids": [str(_plug_id()), str(second)], "csrf_token": csrf_token(logged_in_client)},
+    )
+
+    assert response.status_code == 422 and "対象機器は1台まで" in response.text
+
+
+def test_rule_form_has_device_preset(logged_in_client: TestClient) -> None:
+    text = logged_in_client.get("/schedule").text
+
+    assert "でんき予報のスケジュールと同じ機器を選ぶ" in text
+    assert f'data-preset="{_plug_id()}"' in text
+    # 新規ルールの対象機器は未選択
+    new_form = text.split("任意スケジュールを追加")[1]
+    assert 'name="device_ids" value="' in new_form and "checked> リビングのプラグ" not in new_form
+
+
+def test_dashboard_has_card_per_device(logged_in_client: TestClient) -> None:
+    second = _register_second_plug()
+    text = logged_in_client.get("/").text
+
+    assert "リビングのプラグ" in text and "書斎のプラグ" in text
+    assert f"/control/devices/{second}/off" in text
+    assert "給電先：未設定" in text
+
+
+def test_history_shows_device_and_filters(logged_in_client: TestClient, session) -> None:
+    second = _register_second_plug()
+    _post(logged_in_client, f"/control/devices/{_plug_id()}/off")
+    _post(logged_in_client, f"/control/devices/{second}/off")
+
+    text = logged_in_client.get("/history").text
+    assert "リビングのプラグ" in text and "書斎のプラグ" in text
+
+    filtered = logged_in_client.get(f"/history?device={second}").text
+    table = filtered.split("の操作履歴")[1].split("</table>")[0]
+    assert "書斎のプラグ" in table and "リビングのプラグ" not in table
+    assert logged_in_client.get("/history?device=").status_code == 200  # 「すべて」

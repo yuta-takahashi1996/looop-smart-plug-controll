@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.models import device as device_models
 from app.models.schedule import ControlSchedule, EnabledBy, RepeatType, ScheduleRule, ScheduleSource
 from app.models.settings import ControlSettings, load_control_settings, save_control_settings
 from app.providers.base import DayPrices, FetchResult, ForecastLevel
@@ -13,6 +14,8 @@ from app.services import optimizer
 from app.services.forecast import PriceSlot
 from app.services.optimizer import Draft, PlanParams, ScheduleChangeError, plan_day
 from tests.conftest import JST
+
+pytestmark = pytest.mark.usefixtures("default_devices")
 
 N, A, W = ForecastLevel.NORMAL, ForecastLevel.ADVISORY, ForecastLevel.WARNING
 DAY = date(2030, 1, 15)  # 未来の日付（経過済みのコマがない）
@@ -372,6 +375,7 @@ def _rule(session: Session, name: str = "任意", *, state: str = "OFF", start=(
         enabled=True,
         **fields,
     )
+    rule.set_devices(device_models.forecast_schedule_device_ids(session))
     optimizer.save_rule(session, get_settings(), rule, now=BEFORE_DAY)
     return rule
 
@@ -448,6 +452,7 @@ def test_custom_rule_validation(session: Session, fields: dict, message: str | N
         enabled=True,
         **fields,
     )
+    rule.set_devices(device_models.forecast_schedule_device_ids(session))
 
     errors = optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY)
 
@@ -461,6 +466,7 @@ def test_custom_on_is_not_limited(session: Session) -> None:
     rule = ScheduleRule(
         name="終日", target_state="ON", repeat_type=RepeatType.DAILY, start_time=time(0), end_time=time(0), enabled=True
     )
+    rule.set_devices(device_models.forecast_schedule_device_ids(session))
 
     assert optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY) == []
 
@@ -506,6 +512,7 @@ def test_rule_conflicting_with_modified_schedule_is_reported(session: Session) -
     rule = ScheduleRule(
         name="重複", target_state="ON", repeat_type=RepeatType.DAILY, start_time=time(10, 30), end_time=time(11, 30), enabled=True
     )
+    rule.set_devices(device_models.forecast_schedule_device_ids(session))
     messages = optimizer.save_rule(session, get_settings(), rule, now=BEFORE_DAY)
 
     assert any("01/15 10:30〜11:30" in m and "10:00〜11:00" in m for m in messages)
@@ -519,6 +526,7 @@ def test_custom_off_gap_validation(session: Session) -> None:
     rule = ScheduleRule(
         name="近い", target_state="OFF", repeat_type=RepeatType.DAILY, start_time=time(13, 30), end_time=time(14), enabled=True
     )
+    rule.set_devices(device_models.forecast_schedule_device_ids(session))
 
     errors = optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY)
 
