@@ -357,11 +357,11 @@
 
 <div class="mt-3 space-y-1 text-xs text-slate-500">
   <p>でんき警報のスケジュールは常に有効、でんき注意報は「自動適用（AUTO_ENABLE）」が{{ "有効" if control.auto_enable else "無効" }}のため{{ "自動で有効" if control.auto_enable else "個別に有効にしない限り実行しません" }}。設定は<a href="{{ url_for('settings') }}" class="underline">設定画面</a>で変更できます。</p>
-  <p>時間は30分単位で変更でき、他のスケジュールと重ならず、間隔が0分（連続）か最低切り替え間隔（{{ control.min_switch_interval_minutes }}分）以上である必要があります。でんき注意報は運用時間（{{ control.operation_start.strftime("%H:%M") }}〜{{ control.operation_end.strftime("%H:%M") }}）・最大連続OFF（{{ control.max_continuous_off_minutes }}分）・1日の最大OFF（{{ control.max_daily_off_minutes }}分）の範囲内に限ります。</p>
+  <p>時間は30分単位で変更でき、他のスケジュールと重ならず、間隔が0分（連続）か最低切り替え間隔（{{ control.min_switch_interval_minutes }}分）以上である必要があります。でんき注意報は自動 OFF の許可時間（{% if control.off_all_day %}終日{% else %}{{ control.operation_start.strftime("%H:%M") }}〜{{ control.operation_end.strftime("%H:%M") }}{% endif %}）・最大連続OFF（{{ control.max_continuous_off_minutes }}分）・1日の最大OFF（{{ control.max_daily_off_minutes }}分）の範囲内に限ります。</p>
   <p>手動で変更したスケジュールは、予報の再取得や再生成で上書きされません。</p>
   <p>対象機器は1つのスケジュールにつき{{ max_devices }}台まで選べます。でんき予報のスケジュールは<a href="{{ url_for('settings') }}" class="underline">設定画面</a>の対象機器（現在：{{ forecast_device_names|join("・") or "未設定" }}）で作り、開始前のものは個別に変更できます。対象機器が異なっても、スケジュール同士の時間は重ねられません。給電先のポータブル電源の残量が下限以下になった機器だけ ON に戻し（「残量低下でON」）、スケジュールは終了時刻まで続けます（その機器はスケジュールの終了まで OFF に戻しません）。</p>
   <p>充電モードは、スケジュールの開始時・終了時にそれぞれの設定へ切り替えます（「変更しない」は切り替えません）。でんき予報のスケジュールは<a href="{{ url_for('settings') }}" class="underline">設定画面</a>の既定値、任意スケジュールはルールの設定で作ります。開始時は開始前まで、終了時は終了前（実行中を含む）まで個別に変更できます。連続するスケジュールの間では、次のスケジュールの開始時の設定を使います。</p>
-  <p>任意スケジュールは、でんき予報のスケジュールより優先します（でんき予報のスケジュールは任意スケジュールと重ならない範囲で作ります）。OFF の任意スケジュールにも、でんき注意報と同じ制限（運用時間・最大連続OFF・1日の最大OFF・最低切り替え間隔）を適用します。今日・明日の分は個別に有効・無効を切り替えられます（時間の変更はルールで行います）。</p>
+  <p>任意スケジュールは、でんき予報のスケジュールより優先します（でんき予報のスケジュールは任意スケジュールと重ならない範囲で作ります）。OFF の任意スケジュールにも、でんき注意報と同じ制限（自動 OFF の許可時間・最大連続OFF・1日の最大OFF・最低切り替え間隔）を適用します。今日・明日の分は個別に有効・無効を切り替えられます（時間の変更はルールで行います）。</p>
   <p>有効なスケジュールは1分ごとの制御サイクルで実行します。実行時にも OFF 時間の制限を確認し、到達した場合は途中で ON に戻します（中断）。{% if is_dry_run(request) %}Dry Run 中のため、プラグは操作せず履歴に記録するだけです。{% endif %}</p>
 </div>
 {% endblock %}

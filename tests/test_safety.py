@@ -63,7 +63,26 @@ def test_no_off_without_forecast() -> None:
 def test_operation_hours(level: ForecastLevel) -> None:
     decision = check(schedule(level, at(18), at(20)), at(18, 0))
 
-    assert not decision.allowed and "運用時間外" in decision.reason
+    assert not decision.allowed and "許可時間外" in decision.reason
+
+
+def test_off_all_day_ignores_allowed_hours() -> None:
+    all_day = CONTROL.model_copy(update={"off_all_day": True})
+
+    decision = safety.check_off(
+        schedule(ForecastLevel.ADVISORY, at(20), at(21)), at(20), all_day, has_forecast=True, day_off_minutes=0
+    )
+
+    assert decision.allowed
+
+
+def test_off_all_day_keeps_the_other_limits() -> None:
+    all_day = CONTROL.model_copy(update={"off_all_day": True})
+    s = schedule(ForecastLevel.ADVISORY, at(20), at(23), executed_start=at(20))
+
+    decision = safety.check_off(s, at(22), all_day, has_forecast=True, day_off_minutes=0, started_at=at(20))
+
+    assert not decision.allowed and "最大連続OFF時間" in decision.reason
 
 
 def test_continuous_limit() -> None:

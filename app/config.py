@@ -50,8 +50,10 @@ class Settings(BaseSettings):
     )
 
     # Operation
+    # 自動 OFF を許可する時間帯（docs/07 §7.5）。off_all_day が有効なら時刻によらず許可する
     operation_start: time = time(9, 0)
     operation_end: time = time(18, 0)
+    off_all_day: bool = False
 
     # Looop
     looop_area: str = "hokkaido"
@@ -73,7 +75,7 @@ class Settings(BaseSettings):
     charge_mode_start: Literal["FAST", "SILENT", "KEEP"] = "SILENT"
     charge_mode_end: Literal["FAST", "SILENT", "KEEP"] = "FAST"
 
-    # Schedule（運用時間・OFF時間の制限、推定節約額の算出に使う値）
+    # Schedule（OFF時間の制限、推定節約額の算出に使う値）
     # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
     auto_enable: bool = False
     # ポータブル電源の変換効率（推定節約額の計算と残量の予測に共用）

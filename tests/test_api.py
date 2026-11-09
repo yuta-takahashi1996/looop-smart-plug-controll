@@ -233,6 +233,18 @@ def test_settings_save_and_reload(logged_in_client: TestClient) -> None:
     assert 'name="estimated_average_power_w" value="200"' in reloaded
 
 
+def test_settings_off_all_day_can_be_turned_on_and_off(logged_in_client: TestClient) -> None:
+    assert 'name="off_all_day" checked' not in logged_in_client.get("/settings").text
+
+    headers = {"HX-Request": "true"}
+    token = {"csrf_token": csrf_token(logged_in_client)}
+    assert logged_in_client.post("/settings", data={**VALID_SETTINGS, "off_all_day": "on", **token}, headers=headers).status_code == 200
+    assert 'name="off_all_day" checked' in logged_in_client.get("/settings").text
+
+    assert logged_in_client.post("/settings", data={**VALID_SETTINGS, **token}, headers=headers).status_code == 200
+    assert 'name="off_all_day" checked' not in logged_in_client.get("/settings").text
+
+
 def test_settings_accepts_csrf_header(logged_in_client: TestClient) -> None:
     response = logged_in_client.post(
         "/settings",
@@ -246,7 +258,7 @@ def test_settings_accepts_csrf_header(logged_in_client: TestClient) -> None:
 @pytest.mark.parametrize(
     ("override", "message"),
     [
-        ({"operation_start": "18:00", "operation_end": "09:00"}, "運用開始時刻は運用終了時刻より前"),
+        ({"operation_start": "18:00", "operation_end": "09:00"}, "許可開始時刻は許可終了時刻より前"),
         ({"max_continuous_off_minutes": "200", "max_daily_off_minutes": "100"}, "最大連続OFF時間は"),
         ({"round_trip_efficiency": "120"}, "変換効率"),
         ({"estimated_average_power_w": "abc"}, "想定平均負荷"),
@@ -535,7 +547,7 @@ def test_dashboard_shows_unconfirmed_plug_status(logged_in_client: TestClient) -
 
 
 # --- 運転スケジュール（Phase 4） ---
-# FakeProvider の明日分：17:00〜19:00 が注意報、19:00〜20:00 が警報（運用時間 9:00〜18:00）
+# FakeProvider の明日分：17:00〜19:00 が注意報、19:00〜20:00 が警報（許可時間 9:00〜18:00）
 
 
 def _tomorrow_schedules(session) -> list[ControlSchedule]:
@@ -551,7 +563,7 @@ def test_schedules_are_generated_after_refresh(logged_in_client: TestClient, ses
     assert [(s.source_level.value, s.enabled) for s in schedules] == [("ADVISORY", False), ("WARNING", True)]
 
     text = logged_in_client.get("/schedule?day=tomorrow").text
-    assert "17:00〜18:00" in text and "でんき注意報" in text and "運用時間外を除外" in text
+    assert "17:00〜18:00" in text and "でんき注意報" in text and "許可時間外を除外" in text
     assert "19:00〜20:00" in text and "でんき警報" in text
     assert "有効にする" in text and "無効にする" in text
 
@@ -599,7 +611,7 @@ def test_change_schedule_time(logged_in_client: TestClient, session) -> None:
     ("index", "start", "end", "message"),
     [
         (0, "16:00", "19:30", "重なります"),
-        (0, "18:00", "18:30", "運用時間"),
+        (0, "18:00", "18:30", "許可時間"),
         (0, "17:15", "18:00", "30分単位"),
         (0, "aa", "18:00", "HH:MM"),
     ],
@@ -733,7 +745,7 @@ def test_create_weekly_on_rule(logged_in_client: TestClient, session) -> None:
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
-        ({"start": "08:00", "end": "09:00"}, "運用時間"),
+        ({"start": "08:00", "end": "09:00"}, "許可時間"),
         ({"start": "aa"}, "HH:MM"),
         ({"target_date": "x"}, "YYYY-MM-DD"),
         ({"name": " "}, "名前を入力"),
@@ -972,7 +984,7 @@ def test_history_shows_monthly_summaries(logged_in_client: TestClient, session) 
 def test_settings_are_grouped(logged_in_client: TestClient) -> None:
     text = logged_in_client.get("/settings").text
 
-    for title in ("スケジュール", "運用時間", "OFF 時間の制限", "ポータブル電源", "推定節約額"):
+    for title in ("スケジュール", "自動 OFF を許可する時間帯", "OFF 時間の制限", "ポータブル電源", "推定節約額"):
         assert f">{title}</legend>" in text
 
 

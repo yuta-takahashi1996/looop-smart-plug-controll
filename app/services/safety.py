@@ -48,8 +48,8 @@ def check_off(
 
     # 注意報・任意 OFF は常に、警報は残量を取得できない間だけ、OFF 時間の制限を実行時にも適用する
     if schedule.source_level != ScheduleSource.WARNING or not battery_known:
-        if not control.operation_start <= now.time() < control.operation_end:
-            return OffDecision(False, "運用時間外のため ON に戻します")
+        if not control.off_all_day and not control.operation_start <= now.time() < control.operation_end:
+            return OffDecision(False, "自動 OFF の許可時間外のため ON に戻します")
         if started_at is not None:
             continuous = int((now - started_at).total_seconds() // 60)
             if continuous >= control.max_continuous_off_minutes:

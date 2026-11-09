@@ -1106,7 +1106,7 @@ class ControlService:
             reason = f"{self._source_name(device)}の残量が下限以下のため ON に戻す（{battery_decision.reason}）"
             status = ScheduleDeviceStatus.RETURNED
         else:
-            # 残量以外の判定（予報なし・運用時間・OFF 時間の制限）：この機器の実行を中断する
+            # 残量以外の判定（予報なし・許可時間・OFF 時間の制限）：この機器の実行を中断する
             reason = decision.reason or ""
             status = ScheduleDeviceStatus.ABORTED
         if sd.executed_start_at is not None:

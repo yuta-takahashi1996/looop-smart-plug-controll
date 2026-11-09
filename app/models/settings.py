@@ -31,6 +31,7 @@ class ControlSettings(BaseModel):
     auto_enable: bool
     operation_start: time
     operation_end: time
+    off_all_day: bool = False  # 自動 OFF を終日許可する（時刻を使わない）
     round_trip_efficiency: float = Field(gt=0, le=1)
     max_continuous_off_minutes: int = Field(ge=0)
     max_daily_off_minutes: int = Field(ge=0)
@@ -45,7 +46,7 @@ class ControlSettings(BaseModel):
     @model_validator(mode="after")
     def _check_consistency(self) -> "ControlSettings":
         if self.operation_start >= self.operation_end:
-            raise ValueError("運用開始時刻は運用終了時刻より前にしてください")
+            raise ValueError("許可開始時刻は許可終了時刻より前にしてください")
         if self.max_continuous_off_minutes > self.max_daily_off_minutes:
             raise ValueError("最大連続OFF時間は1日の最大OFF時間以下にしてください")
         return self

@@ -12,7 +12,7 @@ from app.providers.base import DayPrices, FetchResult, ForecastLevel
 from app.services import forecast as forecast_service
 from app.services import optimizer
 from app.services.forecast import PriceSlot
-from app.services.optimizer import Draft, PlanParams, ScheduleChangeError, plan_day
+from app.services.optimizer import Draft, PlanParams, ScheduleChangeError, estimated_saving, plan_day
 from tests.conftest import JST
 
 pytestmark = pytest.mark.usefixtures("default_devices")
@@ -64,7 +64,7 @@ def spans(drafts: list[Draft]) -> list[tuple[int, int, ForecastLevel, bool]]:
 
 
 def test_warning_is_always_enabled_and_not_trimmed() -> None:
-    # 19:00〜24:00（運用時間外・10コマ）の警報。制限を超えてもそのまま
+    # 19:00〜24:00（許可時間外・10コマ）の警報。制限を超えてもそのまま
     drafts = plan_day(make_slots({range(38, 48): W}), params(auto_enable=False))
 
     assert spans(drafts) == [(38, 48, W, True)]
@@ -78,11 +78,11 @@ def test_advisory_enabled_follows_auto_enable(auto_enable: bool) -> None:
 
 
 def test_advisory_is_clipped_to_operation_hours() -> None:
-    # 17:00〜19:00 の注意報 → 運用終了 18:00 まで
+    # 17:00〜19:00 の注意報 → 許可終了 18:00 まで
     drafts = plan_day(make_slots({range(34, 38): A}), params())
 
     assert spans(drafts) == [(34, 36, A, False)]
-    assert drafts[0].notes == ("運用時間外を除外",)
+    assert drafts[0].notes == ("許可時間外を除外",)
 
 
 def test_advisory_outside_operation_hours_is_dropped() -> None:
@@ -301,7 +301,7 @@ def test_warning_time_can_exceed_limits(session: Session, two_schedules: list[Co
     [
         ((10, 15), (11, 0), "30分単位"),
         ((11, 0), (10, 0), "開始を終了より前"),
-        ((8, 30), (10, 0), "運用時間"),
+        ((8, 30), (10, 0), "許可時間"),
         ((10, 0), (12, 30), "最大連続OFF時間"),
         ((18, 30), (19, 30), "重なります"),
     ],
@@ -314,6 +314,40 @@ def test_change_time_validation(
             session, get_settings(), two_schedules[0], start_at=_at(*start), end_at=_at(*end), now=BEFORE_DAY
         )
     assert any(message in m for m in exc_info.value.messages)
+
+
+def _allow_off_all_day(session: Session) -> None:
+    control = load_control_settings(session, get_settings())
+    save_control_settings(session, control.model_copy(update={"off_all_day": True}))
+
+
+def test_off_all_day_keeps_advisory_outside_hours() -> None:
+    # 01:00〜03:00 と、日付をまたぐ扱いの 23:00〜24:00
+    drafts = plan_day(make_slots({range(2, 6): A, range(46, 48): A}), params(off_all_day=True, auto_enable=True))
+
+    assert spans(drafts) == [(2, 6, A, True), (46, 48, A, True)]
+    assert all(not d.notes for d in drafts)
+
+
+def test_off_all_day_keeps_continuous_limit() -> None:
+    drafts = plan_day(make_slots({range(0, 10): A}), params(off_all_day=True))
+
+    assert [d.length for d in drafts] == [4]
+
+
+def test_off_all_day_uses_whole_day_for_charge_price() -> None:
+    slots = make_slots({}, {0: 5.0, 20: 30.0})  # 最安は許可時間外の 00:00
+
+    assert estimated_saving(slots, 20, 21, params(off_all_day=True)) > estimated_saving(slots, 20, 21, params())
+
+
+def test_off_all_day_allows_time_change_outside_hours(session: Session, two_schedules: list[ControlSchedule]) -> None:
+    _allow_off_all_day(session)
+    advisory = two_schedules[0]
+
+    optimizer.update_schedule(session, get_settings(), advisory, start_at=_at(8, 30), end_at=_at(10), now=BEFORE_DAY)
+
+    assert advisory.start_at.astimezone(JST).time() == time(8, 30)
 
 
 def test_gap_validation(session: Session, two_schedules: list[ControlSchedule]) -> None:
@@ -428,7 +462,7 @@ def test_custom_off_is_counted_first_in_daily_limit(session: Session) -> None:
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
-        (dict(start=(8, 0), end=(9, 0)), "運用時間"),
+        (dict(start=(8, 0), end=(9, 0)), "許可時間"),
         (dict(start=(10, 0), end=(12, 30)), "最大連続OFF時間"),
         (dict(start=(11, 0), end=(10, 0)), "開始時刻を終了時刻より前"),
         (dict(start=(10, 15), end=(11, 0)), "30分単位"),
@@ -460,6 +494,16 @@ def test_custom_rule_validation(session: Session, fields: dict, message: str | N
         assert errors == []
     else:
         assert any(message in e for e in errors), errors
+
+
+def test_off_all_day_allows_custom_off_until_midnight(session: Session) -> None:
+    _allow_off_all_day(session)
+    rule = ScheduleRule(
+        name="深夜", target_state="OFF", repeat_type=RepeatType.DAILY, start_time=time(23), end_time=time(0), enabled=True
+    )
+    rule.set_devices(device_models.forecast_schedule_device_ids(session))
+
+    assert optimizer.validate_rule(session, get_settings(), rule, now=BEFORE_DAY) == []
 
 
 def test_custom_on_is_not_limited(session: Session) -> None:

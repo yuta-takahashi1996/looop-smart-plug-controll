@@ -2,7 +2,7 @@
 
 でんき予報の注意報・警報が連続するコマから OFF スケジュールを作る。
 - 警報：常に有効。生成時には OFF 時間の制限で切り詰めない（残量を取得できない間の制限は実行時に適用する）。
-- 注意報：AUTO_ENABLE が有効なら有効。運用時間・最大連続OFF時間・1日の最大OFF時間に収まるよう、
+- 注意報：AUTO_ENABLE が有効なら有効。自動 OFF の許可時間・最大連続OFF時間・1日の最大OFF時間に収まるよう、
   電源単価の高いコマを優先して切り詰める。
 - 最低切り替え間隔：スケジュール同士の間隔は 0（連続）か最低切り替え間隔以上とする。
 手動で変更したスケジュールと、開始済みのスケジュールは再生成で上書きしない。
@@ -10,7 +10,7 @@
 
 任意スケジュール（docs/07 §7.9）：ルール（schedule_rules）を当日・翌日分の ON／OFF スケジュールに展開する。
 予報の有無によらず展開し、でんき予報のスケジュールより優先する（予報のスケジュールは任意スケジュールを避けて作る）。
-任意 OFF にはでんき注意報と同じ制限（運用時間・最大連続OFF時間・1日の最大OFF時間・最低切り替え間隔）を適用する。
+任意 OFF にはでんき注意報と同じ制限（自動 OFF の許可時間・最大連続OFF時間・1日の最大OFF時間・最低切り替え間隔）を適用する。
 
 対象機器（docs/17 §17.6）：でんき予報のスケジュールは設定の「でんき予報のスケジュールの対象機器」、任意スケジュールは
 ルールの対象機器で作る（制御対象の機器だけ。0台なら作らない）。推定節約額は対象機器ごとの想定平均負荷で算出して合計する。
@@ -59,6 +59,7 @@ class PlanParams:
     auto_enable: bool
     round_trip_efficiency: float
     average_power_w: float
+    off_all_day: bool = False  # 自動 OFF を終日許可する
 
     @classmethod
     def from_settings(cls, control: ControlSettings) -> "PlanParams":
@@ -71,6 +72,7 @@ class PlanParams:
             auto_enable=control.auto_enable,
             round_trip_efficiency=control.round_trip_efficiency,
             average_power_w=control.estimated_average_power_w,
+            off_all_day=control.off_all_day,
         )
 
 
@@ -93,7 +95,12 @@ class Draft:
 
 
 def in_operation(slot: PriceSlot, params: PlanParams) -> bool:
-    """コマ全体が運用時間内か（23:30〜24:00 のコマは終了が翌日になるため、運用時間外として扱う）。"""
+    """コマ全体が自動 OFF の許可時間内か。
+
+    終日許可なら常に真。それ以外では 23:30〜24:00 のコマは終了が翌日になるため、許可時間外として扱う。
+    """
+    if params.off_all_day:
+        return True
     return (
         slot.end.date() == slot.start.date()
         and params.operation_start <= slot.start.time()
@@ -102,7 +109,7 @@ def in_operation(slot: PriceSlot, params: PlanParams) -> bool:
 
 
 def estimated_saving(slots: list[PriceSlot], start: int, end: int, params: PlanParams) -> float:
-    """OFF 時間帯の電源単価で回避できる購入費 − 運用時間内の最安の電源単価で充電する費用（docs/07 §7.2）。"""
+    """OFF 時間帯の電源単価で回避できる購入費 − 自動 OFF の許可時間内の最安の電源単価で充電する費用（docs/07 §7.2）。"""
     if end <= start:
         return 0.0
     operation_prices = [s.energy_price for s in slots if in_operation(s, params)] or [s.energy_price for s in slots]
@@ -202,11 +209,11 @@ def plan_day(
         if level == ForecastLevel.WARNING:
             drafts.append(Draft(start, end, level, enabled=True))
             continue
-        # 注意報：運用時間内に限り、最大連続OFF時間に収める
+        # 注意報：自動 OFF の許可時間内に限り、最大連続OFF時間に収める
         inside = [i for i in range(start, end) if in_operation(slots[i], params)]
         if not inside:
             continue
-        notes = ("運用時間外を除外",) if len(inside) < end - start else ()
+        notes = ("許可時間外を除外",) if len(inside) < end - start else ()
         c_start, c_end = inside[0], inside[-1] + 1
         if c_end - c_start > params.max_continuous_slots:
             if params.max_continuous_slots <= 0:
@@ -422,9 +429,9 @@ def _validate(
         label = LEVEL_LABELS.get(schedule.source_level, "任意 OFF")
         local_start, local_end = start_at.astimezone(tz), end_at.astimezone(tz)
         end_time = local_end.time() if local_end.date() == local_start.date() else time(23, 59, 59)
-        if local_start.time() < params.operation_start or end_time > params.operation_end:
+        if not params.off_all_day and (local_start.time() < params.operation_start or end_time > params.operation_end):
             errors.append(
-                f"{label}のスケジュールは運用時間（{params.operation_start:%H:%M}〜{params.operation_end:%H:%M}）内にしてください"
+                f"{label}のスケジュールは自動 OFF の許可時間（{params.operation_start:%H:%M}〜{params.operation_end:%H:%M}）内にしてください"
             )
         length = int((end_at - start_at) / SLOT)
         if length > params.max_continuous_slots:
@@ -567,13 +574,13 @@ def _minutes_label(start: int, end: int) -> str:
 
 
 def _off_limit_errors(start: int, end: int, params: PlanParams) -> list[str]:
-    """任意 OFF の時間帯がでんき注意報と同じ制限（運用時間・最大連続OFF時間）に収まるか。start / end は分。"""
+    """任意 OFF の時間帯がでんき注意報と同じ制限（自動 OFF の許可時間・最大連続OFF時間）に収まるか。start / end は分。"""
     errors = []
     op_start = params.operation_start.hour * 60 + params.operation_start.minute
     op_end = params.operation_end.hour * 60 + params.operation_end.minute
-    if start < op_start or end > op_end:
+    if not params.off_all_day and (start < op_start or end > op_end):
         errors.append(
-            f"OFF の任意スケジュールは運用時間（{params.operation_start:%H:%M}〜{params.operation_end:%H:%M}）内にしてください"
+            f"OFF の任意スケジュールは自動 OFF の許可時間（{params.operation_start:%H:%M}〜{params.operation_end:%H:%M}）内にしてください"
         )
     max_minutes = params.max_continuous_slots * SLOT_MINUTES
     if end - start > max_minutes:

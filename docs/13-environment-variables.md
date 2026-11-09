@@ -17,6 +17,7 @@ ALLOWED_NETWORKS=127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 # Operation
 OPERATION_START=09:00
 OPERATION_END=18:00
+OFF_ALL_DAY=false
 
 # Looop
 LOOOP_AREA=hokkaido
@@ -76,7 +77,7 @@ LOG_LEVEL=INFO
 
 `WEB_PASSWORD_HASH` または `SESSION_SECRET` が未設定の場合、Web UI にはログインできない（認証なしでは動作させない）。
 
-Web UI から変更した制御条件（運用時間、最適化パラメータ）は `system_settings` に保存され、環境変数の値より優先される。環境変数の値は未保存の項目の初期値として使う。
+Web UI から変更した制御条件（自動 OFF を許可する時間帯、最適化パラメータ）は `system_settings` に保存され、環境変数の値より優先される。環境変数の値は未保存の項目の初期値として使う。
 
 ## SwitchBot
 
@@ -86,7 +87,7 @@ Web UI から変更した制御条件（運用時間、最適化パラメータ�
 
 ## スケジュール
 
-`AUTO_ENABLE`、運用時間、OFF時間の制限、往復効率、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。`ROUND_TRIP_EFFICIENCY` は推定節約額の算出（充電に必要な電力量）と残量の予測（電池からの減り方）に共用する。本来は放電だけの効率の方が高いが、共用することで残量の予測は安全側（早めに ON に戻す）になる。
+`AUTO_ENABLE`、自動 OFF を許可する時間帯（`OPERATION_START` / `OPERATION_END` / `OFF_ALL_DAY`。`OFF_ALL_DAY=true` なら時刻によらず許可する）、OFF時間の制限、往復効率、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。`ROUND_TRIP_EFFICIENCY` は推定節約額の算出（充電に必要な電力量）と残量の予測（電池からの減り方）に共用する。本来は放電だけの効率の方が高いが、共用することで残量の予測は安全側（早めに ON に戻す）になる。
 
 ## Jackery
 
