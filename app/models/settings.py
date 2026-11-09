@@ -9,7 +9,7 @@ import enum
 from datetime import UTC, datetime, time
 
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import DateTime, Enum, Integer, String, Text, select
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.config import Settings
@@ -105,6 +105,8 @@ class SystemEvent(Base):
     message: Mapped[str] = mapped_column(Text)
     # 重複検知用のキー（お知らせの URL など）
     reference: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    # 関係する機器（devices.id。機器によらないイベントは NULL。docs/17 §17.4.1）
+    device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"), nullable=True, index=True)
     resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
 
@@ -115,6 +117,7 @@ def record_event(
     message: str,
     *,
     reference: str | None = None,
+    device_id: int | None = None,
 ) -> SystemEvent:
     event = SystemEvent(
         occurred_at=datetime.now(UTC),
@@ -122,18 +125,23 @@ def record_event(
         category=category,
         message=message,
         reference=reference,
+        device_id=device_id,
     )
     session.add(event)
     session.commit()
     return event
 
 
-def resolve_events(session: Session, category: EventCategory) -> None:
-    """カテゴリの未解決イベントを解決済みにする（例：取得失敗後に取得が成功したとき）。"""
+def resolve_events(session: Session, category: EventCategory, *, device_id: int | None = None) -> None:
+    """カテゴリの未解決イベントを解決済みにする（例：取得失敗後に取得が成功したとき）。
+
+    device_id を指定した場合は、その機器のイベントだけを解決する（機器ごとの失敗を分けて扱う。docs/14 §14.2）。
+    """
     now = datetime.now(UTC)
-    for event in session.scalars(
-        select(SystemEvent).where(SystemEvent.category == category, SystemEvent.resolved_at.is_(None))
-    ):
+    query = select(SystemEvent).where(SystemEvent.category == category, SystemEvent.resolved_at.is_(None))
+    if device_id is not None:
+        query = query.where(SystemEvent.device_id == device_id)
+    for event in session.scalars(query):
         event.resolved_at = now
     session.commit()
 

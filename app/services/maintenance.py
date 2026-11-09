@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models.forecast import ForecastPrice
-from app.models.schedule import ControlLog, ControlResult, ControlSchedule, DailySummary, ScheduleStatus
+from app.models.schedule import ControlLog, ControlResult, ControlSchedule, DailySummary, ScheduleDevice, ScheduleStatus
 from app.models.settings import EventCategory, SystemEvent
 from app.services import optimizer, safety
 
@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 
 SUMMARY_LOOKBACK_DAYS = 7  # 起動時に未集計の日を探す範囲
 EVENT_RETENTION_DAYS = 90  # 解決済みイベントの保持期間
+
+
+def measured_rows(schedules: list[ControlSchedule]) -> list[ScheduleDevice]:
+    """実測値のある機器ごとの実行結果。同じスケジュールで同じ給電先の機器は同じ値のため、1件だけ数える。"""
+    rows: dict[tuple[int, int], ScheduleDevice] = {}
+    for s in schedules:
+        for sd in s.devices:
+            if sd.battery_start_percent is None and sd.measured_power_w is None:
+                continue
+            rows.setdefault((s.id, sd.power_source_id or -sd.device_id), sd)
+    return list(rows.values())
 
 
 def _day_range(day: date, tz: ZoneInfo) -> tuple[datetime, datetime]:
@@ -40,8 +51,9 @@ def summarize_day(session: Session, settings: Settings, day: date) -> DailySumma
     schedules = optimizer.schedules_for(session, day)
     logs = list(session.scalars(select(ControlLog).where(ControlLog.executed_at >= start, ControlLog.executed_at < end)))
 
-    measured = [s for s in schedules if s.battery_start_percent is not None and s.battery_end_percent is not None]
-    powered = [s for s in schedules if s.measured_power_w is not None and s.executed_start_at and s.executed_end_at]
+    rows = measured_rows(schedules)
+    measured = [s for s in rows if s.battery_start_percent is not None and s.battery_end_percent is not None]
+    powered = [s for s in rows if s.measured_power_w is not None and s.executed_start_at and s.executed_end_at]
     weight = sum((s.executed_end_at - s.executed_start_at).total_seconds() for s in powered)  # type: ignore[operator]
 
     summary = session.get(DailySummary, day) or DailySummary(summary_date=day)
@@ -162,16 +174,14 @@ TUNING_MIN_DROP_PERCENT = 5  # 残量は整数％のため、減少が小さい�
 
 def tuning_hints(session: Session, settings: Settings, capacity_wh: float, today: date) -> dict:
     """制御パラメータ調整の目安：直近の OFF の実測から、平均消費電力と変換効率を推定する。"""
-    schedules = list(
+    recent = list(
         session.scalars(
-            select(ControlSchedule).where(
-                ControlSchedule.schedule_date >= today - timedelta(days=TUNING_LOOKBACK_DAYS),
-                ControlSchedule.measured_power_w.is_not(None),
-                ControlSchedule.executed_start_at.is_not(None),
-                ControlSchedule.executed_end_at.is_not(None),
-            )
+            select(ControlSchedule).where(ControlSchedule.schedule_date >= today - timedelta(days=TUNING_LOOKBACK_DAYS))
         )
     )
+    schedules = [
+        sd for sd in measured_rows(recent) if sd.measured_power_w is not None and sd.executed_start_at and sd.executed_end_at
+    ]
     hours = [(s.executed_end_at - s.executed_start_at).total_seconds() / 3600 for s in schedules]  # type: ignore[operator]
     total_hours = sum(hours)
     average_power = (

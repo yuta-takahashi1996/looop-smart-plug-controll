@@ -34,10 +34,13 @@ def check_off(
     has_forecast: bool,
     day_off_minutes: int,
     battery_known: bool = False,
+    started_at: datetime | None = None,
 ) -> OffDecision:
     """schedule の OFF を now（表示用のタイムゾーンの日時）の時点で開始・継続してよいか。
 
-    battery_known: ポータブル電源の残量を取得できているか。
+    判定は制御機器ごとに行う（docs/17 §17.7.3）。
+    battery_known: その機器の給電先のポータブル電源の残量を取得できているか（給電先が未設定なら False）。
+    started_at: その機器を OFF にした時刻（最大連続OFF時間の判定に使う。未開始なら None）。
     任意スケジュールはユーザーが指定した時間帯のため、予報が未取得でも実行する（docs/14 §14.2）。
     """
     if not has_forecast and schedule.source_level != ScheduleSource.CUSTOM:
@@ -47,8 +50,8 @@ def check_off(
     if schedule.source_level != ScheduleSource.WARNING or not battery_known:
         if not control.operation_start <= now.time() < control.operation_end:
             return OffDecision(False, "運用時間外のため ON に戻します")
-        if schedule.executed_start_at is not None:
-            continuous = int((now - schedule.executed_start_at).total_seconds() // 60)
+        if started_at is not None:
+            continuous = int((now - started_at).total_seconds() // 60)
             if continuous >= control.max_continuous_off_minutes:
                 return OffDecision(False, f"最大連続OFF時間（{control.max_continuous_off_minutes}分）に達しました")
         if day_off_minutes >= control.max_daily_off_minutes:

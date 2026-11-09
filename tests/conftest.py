@@ -105,6 +105,42 @@ def database() -> Iterator[None]:
     Base.metadata.drop_all(engine)
 
 
+def register_plug(session: Session, external_id: str = "PLUG1", name: str = "リビングのプラグ", *, battery: bool = True, forecast: bool = True):
+    """制御機器（プラグ）を登録する。battery なら給電先のポータブル電源も登録して紐づける。"""
+    from app.config import get_settings
+    from app.models import device as device_models
+
+    source = None
+    if battery:
+        source = device_models.find_device(session, device_models.Vendor.JACKERY, "JK1") or device_models.register_portable_power(
+            session, get_settings(), "JK1", "Jackery 1000 New"
+        )
+    device_type = device_models.find_type(session, device_models.Vendor.SWITCHBOT, "Plug Mini (JP)")
+    now = datetime.now(JST)
+    plug = device_models.Device(
+        device_type_id=device_type.id,
+        external_id=external_id,
+        name=name,
+        active=True,
+        sort_order=device_models.next_sort_order(session),
+        power_source_id=source.id if source else None,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(plug)
+    session.commit()
+    if forecast:
+        device_models.set_forecast_schedule_device_ids(session, device_models.forecast_schedule_device_ids(session) + [plug.id])
+    return plug
+
+
+@pytest.fixture
+def default_devices() -> None:
+    """プラグ1台（給電先は Jackery 1台）を登録し、でんき予報のスケジュールの対象機器にする（1台構成のテスト用）。"""
+    with SessionLocal() as db_session:
+        register_plug(db_session)
+
+
 @pytest.fixture
 def session() -> Iterator[Session]:
     with SessionLocal() as db_session:

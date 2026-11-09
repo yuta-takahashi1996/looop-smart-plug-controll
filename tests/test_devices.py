@@ -1,6 +1,6 @@
 """機器の登録（docs/17-multi-device.md §17.4・§17.5、Phase 9）。SwitchBot・Jackery は模擬し、実機には送信しない。"""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import httpx
 import pytest
@@ -21,6 +21,10 @@ from app.models.schedule import (
     ControlSource,
     EnabledBy,
     PlugState,
+    RepeatType,
+    ScheduleDevice,
+    ScheduleDeviceStatus,
+    ScheduleRule,
     ScheduleSource,
     ScheduleStatus,
 )
@@ -101,6 +105,30 @@ def test_migration_registers_legacy_plug_and_battery(session: Session) -> None:
     assert len(list(session.scalars(select(Device)))) == 2
 
 
+def test_migration_associates_existing_schedules_and_rules(session: Session) -> None:
+    """機器の登録前に作られたスケジュール・ルールは、移行した1台のものにする（docs/17 §17.4.7 の 4）。"""
+    now = datetime.now(UTC)
+    done = ControlSchedule(
+        schedule_date=today(), schedule_version=1, start_at=now - timedelta(hours=2), end_at=now - timedelta(hours=1),
+        source_level=ScheduleSource.WARNING, enabled=True, enabled_by=EnabledBy.AUTO, reason="警報", estimated_saving=1.0,
+        status=ScheduleStatus.DONE, updated_at=now,
+    )  # fmt: skip
+    rule = ScheduleRule(
+        name="昼", target_state="OFF", repeat_type=RepeatType.DAILY, start_time=time(12), end_time=time(13), enabled=True,
+        created_at=now, updated_at=now,
+    )  # fmt: skip
+    session.add_all([done, rule])
+    session.commit()
+
+    device_models.migrate_legacy_devices(session, _settings(switchbot_device_id="PLUG1"))
+
+    plug = device_models.find_device(session, Vendor.SWITCHBOT, "PLUG1")
+    session.expire_all()
+    done = session.get(ControlSchedule, done.id)
+    assert done.device_ids == [plug.id] and done.devices[0].status == ScheduleDeviceStatus.DONE
+    assert session.get(ScheduleRule, rule.id).device_ids == [plug.id]
+
+
 def test_migration_uses_default_name_and_skips_without_env(session: Session) -> None:
     def fail(_: str) -> str:
         raise switchbot.SwitchBotError("offline")
@@ -147,82 +175,72 @@ def test_unknown_switchbot_type_is_added_as_unsupported(session: Session) -> Non
     assert len(list(session.scalars(select(DeviceType).where(DeviceType.code == "Meter")))) == 1
 
 
-# --- 制御する機器の設定（制御は先頭の1台のまま） ---
+# --- 制御する機器の読み込み（docs/17 §17.7） ---
 
 
 class FakeClient:
+    """機器ごとの状態を持つ SwitchBot の模擬。"""
+
+    credentials_configured = True
+
     def __init__(self) -> None:
-        self.device_id = ""
+        self.power: dict[str, str] = {}
         self.commands: list[tuple[str, str]] = []
 
-    @property
-    def configured(self) -> bool:
-        return bool(self.device_id)
+    def get_status(self, device_id: str | None = None) -> switchbot.PlugStatus:
+        return switchbot.PlugStatus(power=self.power.get(device_id or "", "ON"), device_type="Plug Mini (JP)", raw={})  # type: ignore[arg-type]
 
-    def get_status(self) -> switchbot.PlugStatus:
-        return switchbot.PlugStatus(power="ON", device_type="Plug Mini (JP)", raw={})  # type: ignore[arg-type]
-
-    def send_power_command(self, state: str) -> None:
-        self.commands.append((self.device_id, state))
+    def send_power_command(self, state: str, device_id: str | None = None) -> None:
+        self.commands.append((device_id or "", state))
+        self.power[device_id or ""] = state
 
 
 class FakeJackery:
     configured = True
 
 
-def test_bind_devices_controls_first_active_switch_and_its_battery(session: Session) -> None:
+def test_bind_devices_loads_all_active_switches_and_their_batteries(session: Session) -> None:
     battery = device_models.register_portable_power(session, get_settings(), "JK1", "Jackery")
     first = _add_switch(session, "PLUG1", "リビング", source=battery)
-    _add_switch(session, "PLUG2", "書斎")
-    client = FakeClient()
-    monitor = BatteryMonitor(FakeJackery(), None, SessionLocal)  # type: ignore[arg-type]
-    control = ControlService(_settings(dry_run=False), SessionLocal, switchbot=client, battery=monitor)  # type: ignore[arg-type]
+    second = _add_switch(session, "PLUG2", "書斎")
+    created: list[tuple[str, int, str]] = []
 
+    def factory(external_id: str, device_id: int, name: str) -> BatteryMonitor:
+        created.append((external_id, device_id, name))
+        return BatteryMonitor(FakeJackery(), external_id, SessionLocal, owner_id=device_id, name=name)  # type: ignore[arg-type]
+
+    control = ControlService(get_settings(), SessionLocal, switchbot=FakeClient(), battery_factory=factory)  # type: ignore[arg-type]
     control.bind_devices(session)
 
-    assert client.device_id == "PLUG1"
-    assert control.device_id == first.id
-    assert monitor.device_id == "JK1" and monitor.configured
-    log = control.request(session, PlugState.ON, ControlSource.SAFETY, "テスト")
-    assert log.device_id == first.id
-
-
-def test_switch_without_power_source_has_no_battery(session: Session) -> None:
-    _add_switch(session, "PLUG1", "リビング")
-    monitor = BatteryMonitor(FakeJackery(), "", SessionLocal)  # type: ignore[arg-type]
-    control = ControlService(get_settings(), SessionLocal, switchbot=FakeClient(), battery=monitor)  # type: ignore[arg-type]
-
+    assert [d.name for d in control.devices] == ["リビング", "書斎"]
+    assert created == [("JK1", battery.id, "Jackery")]
+    assert control.power_source(first.power_source_id).monitor.device_id == "JK1"
+    assert control.device(second.id).power_source_id is None  # 給電先が未設定なら残量は取得できない扱い
     control.bind_devices(session)
+    assert len(created) == 1  # 同じポータブル電源の BatteryMonitor は作り直さない
+    log = control.request(session, PlugState.ON, ControlSource.SAFETY, "テスト", device_id=second.id)
+    assert log.device_id == second.id
 
-    assert not monitor.configured  # 給電先が未設定なら残量を取得できない扱い（docs/17 §17.7.3）
-    assert monitor.read(datetime.now(UTC)) is None
-    assert "給電先" in (monitor.last_error or "")
 
-
-def test_no_active_switch_is_treated_as_dry_run(session: Session) -> None:
-    client = FakeClient()
-    control = ControlService(_settings(dry_run=False), SessionLocal, switchbot=client, sleep=lambda _: None)  # type: ignore[arg-type]
+def test_removed_device_state_is_dropped(session: Session) -> None:
     plug = _add_switch(session, "PLUG1", "リビング")
+    control = ControlService(get_settings(), SessionLocal, switchbot=FakeClient())  # type: ignore[arg-type]
     control.bind_devices(session)
-    control.set_real_control(True)
-    assert not control.dry_run
+    control.request(session, PlugState.OFF, ControlSource.MANUAL, "テスト", device_id=plug.id)
+    assert control.device_state(plug.id) == PlugState.OFF
 
     plug.active = False
     session.commit()
     control.bind_devices(session)
 
-    assert client.device_id == ""
-    assert control.dry_run  # 送信先がない
-    assert control.state is None
-    control.request(session, PlugState.ON, ControlSource.SAFETY, "テスト")
-    assert client.commands == []
+    assert control.devices == []
+    with pytest.raises(ValueError):
+        control.request(session, PlugState.ON, ControlSource.SAFETY, "テスト", device_id=plug.id)
 
 
 def test_plug_monitor_saves_last_state(session: Session) -> None:
     plug = _add_switch(session, "PLUG1", "リビング")
-    client = FakeClient()
-    client.device_id = "PLUG1"
-    PlugMonitor(client, SessionLocal).refresh()  # type: ignore[arg-type]
+    PlugMonitor(FakeClient(), SessionLocal).refresh()  # type: ignore[arg-type]
 
     session.refresh(plug)
     assert plug.last_state == "ON"
@@ -252,7 +270,13 @@ def switchbot_api(logged_in_client: TestClient):
     client = SwitchBotClient("token", "secret", "", client=http)
     app.state.switchbot = client
     app.state.plug_monitor = PlugMonitor(client, SessionLocal)
-    app.state.control = ControlService(get_settings(), SessionLocal, switchbot=client, sleep=lambda _: None)
+    app.state.control = ControlService(
+        get_settings(),
+        SessionLocal,
+        switchbot=client,
+        battery_factory=lambda ext, device_id, name: BatteryMonitor(FakeJackery(), ext, SessionLocal, owner_id=device_id, name=name),  # type: ignore[arg-type]
+        sleep=lambda _: None,
+    )
     return state
 
 
@@ -283,7 +307,7 @@ def test_devices_page_shows_error_when_not_configured(logged_in_client: TestClie
     assert "SWITCHBOT_TOKEN" in response.text
 
 
-def test_save_adds_and_controls_first_device(logged_in_client: TestClient, switchbot_api: dict, session: Session) -> None:
+def test_save_adds_devices_to_control(logged_in_client: TestClient, switchbot_api: dict, session: Session) -> None:
     response = logged_in_client.post(
         "/devices", data={"csrf_token": _token(logged_in_client), "active": ["PLUG1", "PLUG2"]}, follow_redirects=False
     )
@@ -292,10 +316,7 @@ def test_save_adds_and_controls_first_device(logged_in_client: TestClient, switc
     switches = device_models.active_switches(session)
     assert [(d.external_id, d.name) for d in switches] == [("PLUG1", "リビングのプラグ"), ("PLUG2", "書斎のプラグ")]
     assert switches[0].power_source_id is None and switches[0].estimated_power_w is None
-    assert app.state.switchbot.device_id == "PLUG1"
-    assert app.state.control.device_id == switches[0].id
-    page = logged_in_client.get("/devices").text
-    assert "制御中" in page
+    assert [d.id for d in app.state.control.devices] == [d.id for d in switches]  # 制御対象はすべて制御する
 
 
 @pytest.mark.parametrize(("external_id", "message"), [("METER", "対応していない"), ("RELAY", "対応していない"), ("PLUG3", "クラウドサービスが無効")])
@@ -322,16 +343,17 @@ def test_remove_keeps_row_and_reactivates_same_row(
     session.expire_all()
     assert not session.get(Device, plug.id).active
     assert device_models.forecast_schedule_device_ids(session) == []
-    assert app.state.control.device_id is None
+    assert app.state.control.device(plug.id) is None
     logged_in_client.post("/devices", data={"csrf_token": token, "active": ["PLUG1"]})
     session.expire_all()
     assert session.get(Device, plug.id).active
     assert len(list(session.scalars(select(Device)))) == 1
 
 
-def _running_schedule(session: Session) -> ControlSchedule:
+def _running_schedule(session: Session, device_id: int) -> ControlSchedule:
     now = datetime.now(UTC)
     schedule = ControlSchedule(
+        devices=[ScheduleDevice(device_id=device_id, status=ScheduleDeviceStatus.RUNNING, executed_start_at=now)],
         schedule_date=today(),
         schedule_version=1,
         start_at=now - timedelta(minutes=10),
@@ -353,8 +375,13 @@ def test_cannot_remove_controlling_device_while_schedule_running(
     logged_in_client: TestClient, switchbot_api: dict, session: Session
 ) -> None:
     token = _token(logged_in_client)
-    logged_in_client.post("/devices", data={"csrf_token": token, "active": ["PLUG1"]})
-    _running_schedule(session)
+    logged_in_client.post("/devices", data={"csrf_token": token, "active": ["PLUG1", "PLUG2"]})
+    plug = device_models.find_device(session, Vendor.SWITCHBOT, "PLUG1")
+    _running_schedule(session, plug.id)
+
+    # 実行中のスケジュールの対象ではない機器は外せる
+    response = logged_in_client.post("/devices", data={"csrf_token": token, "active": ["PLUG1"]}, follow_redirects=False)
+    assert response.status_code == 303
 
     response = logged_in_client.post("/devices", data={"csrf_token": token})
 
@@ -363,10 +390,50 @@ def test_cannot_remove_controlling_device_while_schedule_running(
     assert len(device_models.active_switches(session)) == 1
 
 
+def test_removing_device_updates_pending_schedules_and_rules(
+    logged_in_client: TestClient, switchbot_api: dict, session: Session
+) -> None:
+    """外した機器は開始前のスケジュール・ルールから外し、0台になったら未実行・無効にする（docs/17 §17.5.3）。"""
+    token = _token(logged_in_client)
+    logged_in_client.post("/devices", data={"csrf_token": token, "active": ["PLUG1", "PLUG2"]})
+    plug1 = device_models.find_device(session, Vendor.SWITCHBOT, "PLUG1")
+    plug2 = device_models.find_device(session, Vendor.SWITCHBOT, "PLUG2")
+    now = datetime.now(UTC)
+    both = ControlSchedule(
+        schedule_date=today() + timedelta(days=1), schedule_version=1, start_at=now + timedelta(days=1), end_at=now + timedelta(days=1, hours=1),
+        source_level=ScheduleSource.WARNING, enabled=True, enabled_by=EnabledBy.MANUAL, manually_modified=True, reason="警報",
+        estimated_saving=1.0, updated_at=now,
+        devices=[ScheduleDevice(device_id=plug1.id), ScheduleDevice(device_id=plug2.id)],
+    )  # fmt: skip
+    only1 = ControlSchedule(
+        schedule_date=today() + timedelta(days=1), schedule_version=1, start_at=now + timedelta(days=1, hours=2), end_at=now + timedelta(days=1, hours=3),
+        source_level=ScheduleSource.WARNING, enabled=True, enabled_by=EnabledBy.MANUAL, manually_modified=True, reason="警報",
+        estimated_saving=1.0, updated_at=now, devices=[ScheduleDevice(device_id=plug1.id)],
+    )  # fmt: skip
+    rule = ScheduleRule(
+        name="昼", target_state="OFF", repeat_type=RepeatType.DAILY, start_time=time(12), end_time=time(13), enabled=True,
+        created_at=now, updated_at=now,
+    )  # fmt: skip
+    rule.set_devices([plug1.id])
+    session.add_all([both, only1, rule])
+    session.commit()
+
+    page = logged_in_client.get("/devices").text
+    assert "開始前のスケジュール 2件から外します" in page and "任意スケジュールのルール 1件から外します" in page
+    logged_in_client.post("/devices", data={"csrf_token": token, "active": ["PLUG2"]})
+
+    session.expire_all()
+    assert session.get(ControlSchedule, both.id).device_ids == [plug2.id]
+    assert session.get(ControlSchedule, only1.id).status == ScheduleStatus.SKIPPED
+    rule = session.get(ScheduleRule, rule.id)
+    assert rule.device_ids == [] and not rule.enabled
+
+
 def test_removing_off_device_turns_it_on_first(logged_in_client: TestClient, switchbot_api: dict, session: Session) -> None:
     token = _token(logged_in_client)
     logged_in_client.post("/devices", data={"csrf_token": token, "active": ["PLUG1"]})
     control = app.state.control
+    control.bind_devices(session)
     control.request(session, PlugState.OFF, ControlSource.MANUAL, "手動 OFF")  # Dry Run の想定状態で OFF
 
     response = logged_in_client.post("/devices", data={"csrf_token": token}, follow_redirects=False)
@@ -396,7 +463,7 @@ def test_edit_device_sets_power_source(logged_in_client: TestClient, switchbot_a
     session.expire_all()
     plug = session.get(Device, plug.id)
     assert (plug.name, plug.note, plug.power_source_id, plug.estimated_power_w) == ("リビング", "テレビ", battery.id, 120)
-    assert app.state.control.battery.device_id == "JK1"
+    assert app.state.control.power_source(battery.id).monitor.device_id == "JK1"
     assert "給電先：Jackery 1000 New" in logged_in_client.get("/devices").text
 
 
@@ -412,7 +479,7 @@ def test_edit_device_validation(logged_in_client: TestClient, switchbot_api: dic
     assert "名前" in response.text
 
     # 実行中のスケジュールがある間は給電先を変更できない
-    _running_schedule(session)
+    _running_schedule(session, plug.id)
     response = logged_in_client.post(
         f"/devices/{plug.id}", data={"csrf_token": token, "name": "リビング", "power_source_id": str(battery.id)}
     )

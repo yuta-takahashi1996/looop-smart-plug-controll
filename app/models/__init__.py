@@ -2,7 +2,7 @@
 
 from app.models.device import Device, DeviceType, PortablePowerSettings
 from app.models.forecast import ForecastPrice, PriceAdjustment
-from app.models.schedule import ControlLog, ControlSchedule, DailySummary
+from app.models.schedule import ControlLog, ControlSchedule, DailySummary, ScheduleDevice, ScheduleRuleDevice
 from app.models.settings import SystemEvent, SystemSetting
 
 __all__ = [
@@ -14,6 +14,8 @@ __all__ = [
     "ForecastPrice",
     "PortablePowerSettings",
     "PriceAdjustment",
+    "ScheduleDevice",
+    "ScheduleRuleDevice",
     "SystemEvent",
     "SystemSetting",
 ]

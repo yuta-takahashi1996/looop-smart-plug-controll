@@ -116,26 +116,29 @@ class SwitchBotClient:
             raise SwitchBotError(f"SwitchBot API エラー（statusCode {status_code}）：{detail}")
         return body.get("body")
 
-    def _require_device(self) -> str:
-        if not self.device_id:
+    def _require_device(self, device_id: str | None) -> str:
+        device_id = device_id or self.device_id
+        if not device_id:
             raise SwitchBotNotConfiguredError("制御対象の機器が未設定です（制御機器画面で選んでください）")
-        return self.device_id
+        return device_id
 
     def list_devices(self) -> list[dict[str, Any]]:
         body = self._request("GET", "/devices") or {}
         return list(body.get("deviceList", []))
 
-    def get_status(self) -> PlugStatus:
-        body = self._request("GET", f"/devices/{self._require_device()}/status") or {}
+    def get_status(self, device_id: str | None = None) -> PlugStatus:
+        """機器の状態を取得する。device_id を省略した場合は生成時の機器（確認用スクリプト向け）。"""
+        body = self._request("GET", f"/devices/{self._require_device(device_id)}/status") or {}
         power = str(body.get("power", "")).upper()
         if power not in ("ON", "OFF"):
             raise SwitchBotError(f"プラグの電源状態を取得できませんでした（power={body.get('power')!r}）")
         return PlugStatus(power=power, device_type=body.get("deviceType"), raw=body)  # type: ignore[arg-type]
 
-    def send_power_command(self, state: PowerState) -> None:
+    def send_power_command(self, state: PowerState, device_id: str | None = None) -> None:
         """明示的な ON/OFF のみ送信する。送信後の状態は呼び出し側で再取得して照合すること。"""
+        command = _COMMANDS[state]  # toggle などは送らない（KeyError）
         self._request(
             "POST",
-            f"/devices/{self._require_device()}/commands",
-            json={"command": _COMMANDS[state], "parameter": "default", "commandType": "command"},
+            f"/devices/{self._require_device(device_id)}/commands",
+            json={"command": command, "parameter": "default", "commandType": "command"},
         )

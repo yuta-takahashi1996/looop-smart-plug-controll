@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "components/ui.html" import card %}
+{% from "components/ui.html" import card, state_badge %}
 
 {% block title %}制御機器 | Looop Smart Plug Controller{% endblock %}
 
@@ -12,7 +12,7 @@
 {% block content %}
 <h1 class="mb-1 text-2xl font-bold">制御機器</h1>
 <p class="mb-4 text-sm text-slate-400">
-  SwitchBot の機器（プラグ）から制御対象を選びます。現在は制御対象の先頭の1台（「制御中」）だけを ON／OFF します。
+  SwitchBot の機器（プラグ）から制御対象を選びます。どの機器をどのスケジュールで ON／OFF するかは、<a href="{{ url_for('settings') }}" class="underline">設定画面</a>（でんき予報のスケジュール）と<a href="{{ url_for('schedule') }}" class="underline">運転スケジュール</a>（任意スケジュール）で選びます（1つのスケジュールにつき{{ max_devices }}台まで）。
 </p>
 
 {% if message %}<p class="mb-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200" role="status">{{ message }}</p>{% endif %}
@@ -65,16 +65,13 @@
     <ul id="selected" class="min-h-[4rem] divide-y divide-slate-800/70 rounded-lg border border-dashed border-slate-800" data-pane="selected">
       {% for row in active_rows %}
       {% set d = row.device %}
-      {% set confirm_parts = [] %}
-      {% if row.controlling and controlling_off %}{% set _ = confirm_parts.append("OFF 中のため ON に戻してから外します") %}{% endif %}
-      {% if d.id in forecast_ids %}{% set _ = confirm_parts.append("でんき予報のスケジュールの対象機器から外します") %}{% endif %}
       <li class="flex items-center gap-3 px-3 py-2" draggable="true" data-device="{{ d.external_id }}" data-name="{{ d.name }}"
-          data-confirm="{{ confirm_parts|join('、') }}">
+          data-confirm="{{ row.confirm }}">
         <input type="hidden" name="active" value="{{ d.external_id }}">
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
             <span class="truncate font-medium">{{ d.name }}</span>
-            {% if row.controlling %}<span class="rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs text-emerald-300">制御中</span>{% endif %}
+            {% if row.state %}{{ state_badge(row.state) }}{% endif %}
           </div>
           <div class="text-xs text-slate-400">
             {{ d.device_type.name }}
@@ -140,7 +137,7 @@
         </label>
         <p class="text-xs text-slate-500 sm:col-span-2">
           SwitchBot の機器 ID：{{ d.external_id }}。給電先は、この機器を OFF にしたときに家電へ給電するポータブル電源です（残量で ON に戻す判定に使います）。
-          {% if row.controlling %}実行中のスケジュールがある間は給電先を変更できません。{% endif %}
+          この機器を対象に含むスケジュールの実行中は給電先を変更できません。
         </p>
         <div class="sm:col-span-2 text-right">
           <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">保存</button>

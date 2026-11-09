@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.models import device as device_models
 from app.models.forecast import ForecastPrice
 from app.models.schedule import (
     ControlLog,
@@ -15,12 +16,16 @@ from app.models.schedule import (
     DailySummary,
     EnabledBy,
     PlugState,
+    ScheduleDevice,
+    ScheduleDeviceStatus,
     ScheduleStatus,
 )
 from app.models.settings import EventCategory, EventLevel, SystemEvent, record_event
 from app.providers.base import ForecastLevel
 from app.services import maintenance
 from tests.conftest import JST
+
+pytestmark = pytest.mark.usefixtures("default_devices")
 
 DAY = date(2030, 1, 15)
 
@@ -29,8 +34,22 @@ def at(day: date, hour: int, minute: int = 0) -> datetime:
     return datetime.combine(day, time(hour, minute), tzinfo=JST)
 
 
+DEVICE_FIELDS = ("executed_start_at", "executed_end_at", "battery_start_percent", "battery_end_percent", "measured_power_w")
+
+
 def add_schedule(session: Session, day: date, start: int, end: int, status: ScheduleStatus, **fields) -> ControlSchedule:
+    """スケジュールを追加する。実行した時間帯・実測値は既定のプラグ（給電先は Jackery）の行に入れる。"""
+    plug = device_models.active_switches(session)[0]
+    device_fields = {key: fields.pop(key) for key in DEVICE_FIELDS if key in fields}
+    measured = "battery_start_percent" in device_fields or "measured_power_w" in device_fields
+    row = ScheduleDevice(
+        device_id=plug.id,
+        status=ScheduleDeviceStatus(status.value),
+        power_source_id=plug.power_source_id if measured else None,
+        **device_fields,
+    )
     s = ControlSchedule(
+        devices=[row],
         schedule_date=day,
         schedule_version=1,
         start_at=at(day, start),

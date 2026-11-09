@@ -2,7 +2,7 @@ from datetime import UTC, date, datetime, time, timedelta
 
 import pytest
 
-from app.models.schedule import ControlSchedule, EnabledBy
+from app.models.schedule import ControlSchedule, EnabledBy, ScheduleDevice
 from app.models.settings import ControlSettings
 from app.providers.base import ForecastLevel
 from app.services import safety
@@ -38,13 +38,14 @@ def schedule(level: ForecastLevel, start: datetime, end: datetime, executed_star
         enabled_by=EnabledBy.AUTO,
         reason="",
         estimated_saving=0,
-        executed_start_at=executed_start,
         updated_at=datetime.now(UTC),
+        # 実行した時間帯は機器ごとに持つ（docs/17 §17.4.5）
+        devices=[ScheduleDevice(device_id=1, executed_start_at=executed_start)],
     )
 
 
 def check(s: ControlSchedule, now: datetime, **kwargs) -> safety.OffDecision:
-    options = {"has_forecast": True, "day_off_minutes": 0, **kwargs}
+    options = {"has_forecast": True, "day_off_minutes": 0, "started_at": s.devices[0].executed_start_at, **kwargs}
     return safety.check_off(s, now, CONTROL, **options)
 
 
@@ -89,9 +90,20 @@ def test_advisory_is_limited_even_when_battery_known() -> None:
     assert not check(schedule(ForecastLevel.ADVISORY, at(18), at(19)), at(18), battery_known=True).allowed
 
 
+def test_off_minutes_uses_span_of_devices() -> None:
+    """機器ごとの実行時間帯をまとめた、スケジュールの時間帯で数える（docs/17 §17.6.3）。"""
+    s = schedule(ForecastLevel.ADVISORY, at(10), at(12), executed_start=at(10))
+    s.devices[0].executed_end_at = at(11)
+    s.devices.append(ScheduleDevice(device_id=2, executed_start_at=at(10, 30), executed_end_at=at(12)))
+
+    assert safety.off_minutes([s], at(13)) == 120
+    s.devices[1].executed_end_at = None  # 実行中の機器があれば現在まで
+    assert safety.off_minutes([s], at(11, 30)) == 90
+
+
 def test_off_minutes_counts_running_schedule() -> None:
     done = schedule(ForecastLevel.ADVISORY, at(10), at(11), executed_start=at(10))
-    done.executed_end_at = at(11)
+    done.devices[0].executed_end_at = at(11)
     running = schedule(ForecastLevel.ADVISORY, at(15), at(16), executed_start=at(15))
 
     assert safety.off_minutes([done, running, schedule(ForecastLevel.ADVISORY, at(17), at(18))], at(15, 20)) == 80

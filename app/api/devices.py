@@ -3,12 +3,13 @@
 左に SwitchBot API で取得した機器の一覧、右に制御対象（devices の active=true の制御機器）を表示し、
 「保存」で制御対象を確定する。機器一覧は API の呼び出し上限（1日10,000回）のため、未取得か24時間以上前の
 場合と「再取得」の操作時だけ取得し、メモリに保持する（DB には制御対象の機器だけを保存する）。
-現在の制御は制御対象の先頭の1台だけ（`ControlService.bind_devices`、複数機器の制御は docs/17 §17.7）。
+制御対象から外すときは docs/17 §17.5.3 の検証を行い、開始前のスケジュール・ルール・でんき予報の対象機器から外す。
 """
 
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 from urllib.parse import quote
 
@@ -20,10 +21,20 @@ from sqlalchemy.orm import Session
 
 from app.api.auth import CSRF_FORM_FIELD, verify_csrf
 from app.clients.switchbot import SwitchBotClient, SwitchBotError
+from app.config import get_settings
 from app.models import device as device_models
 from app.models.device import Device, SwitchBotDevice, Vendor
-from app.models.schedule import ControlResult, ControlSchedule, ControlSource, PlugState, ScheduleStatus
+from app.models.schedule import (
+    ControlResult,
+    ControlSchedule,
+    ControlSource,
+    PlugState,
+    ScheduleDeviceStatus,
+    ScheduleRule,
+    ScheduleStatus,
+)
 from app.repositories.database import get_session
+from app.services import optimizer
 from app.templating import templates
 
 router = APIRouter()
@@ -60,7 +71,8 @@ class DeviceListCache:
 class ActiveRow:
     device: Device
     listed: SwitchBotDevice | None  # 一覧の該当機器（一覧を取得できない・見つからない場合は None）
-    controlling: bool  # 現在制御している1台
+    state: PlugState | None  # 制御上の状態（Dry Run では想定の状態）
+    confirm: str  # 外すときの確認事項（docs/17 §17.5.3）
 
 
 def _back(message: str, *, error: bool = False) -> RedirectResponse:
@@ -79,8 +91,42 @@ def _listing(request: Request, session: Session, *, force: bool = False) -> tupl
     return device_models.ensure_switchbot_types(session, items), None
 
 
-def _running_schedules(session: Session) -> list[ControlSchedule]:
-    return list(session.scalars(select(ControlSchedule).where(ControlSchedule.status == ScheduleStatus.RUNNING)))
+def _running_with(session: Session, device_id: int) -> list[ControlSchedule]:
+    """機器を対象に含む実行中のスケジュール（その機器がまだ終わっていないもの）。"""
+    running = session.scalars(select(ControlSchedule).where(ControlSchedule.status == ScheduleStatus.RUNNING))
+    return [
+        s
+        for s in running
+        if (sd := s.device(device_id)) is not None
+        and sd.status in (ScheduleDeviceStatus.PENDING, ScheduleDeviceStatus.RUNNING, ScheduleDeviceStatus.RETURNED)
+    ]
+
+
+def _pending_with(session: Session, device_id: int) -> list[ControlSchedule]:
+    """機器を対象に含む開始前のスケジュール。"""
+    now = datetime.now(UTC)
+    pending = session.scalars(
+        select(ControlSchedule).where(ControlSchedule.status == ScheduleStatus.PENDING, ControlSchedule.start_at > now)
+    )
+    return [s for s in pending if device_id in s.device_ids]
+
+
+def _rules_with(session: Session, device_id: int) -> list[ScheduleRule]:
+    return [r for r in session.scalars(select(ScheduleRule)) if device_id in r.device_ids]
+
+
+def _confirm_text(session: Session, device: Device, state: PlugState | None, forecast_ids: set[int]) -> str:
+    parts = []
+    if state == PlugState.OFF:
+        parts.append("OFF 中のため ON に戻してから外します")
+    pending, rules = len(_pending_with(session, device.id)), len(_rules_with(session, device.id))
+    if pending:
+        parts.append(f"開始前のスケジュール {pending}件から外します")
+    if rules:
+        parts.append(f"任意スケジュールのルール {rules}件から外します")
+    if device.id in forecast_ids:
+        parts.append("でんき予報のスケジュールの対象機器から外します")
+    return "、".join(parts)
 
 
 def _render(
@@ -103,13 +149,20 @@ def _render(
         # 左ペインには ON／OFF に対応する種別だけを表示し、非対応の機器は件数と折りたたみの一覧にする（docs/17 §17.5.1）
         "available": [d for d in candidates if d.device_type.power_control],
         "unsupported": [d for d in candidates if not d.device_type.power_control],
-        "active_rows": [ActiveRow(d, by_external.get(d.external_id), d.id == control.device_id) for d in switches],
+        "active_rows": [
+            ActiveRow(
+                d,
+                by_external.get(d.external_id),
+                control.device_state(d.id),
+                _confirm_text(session, d, control.device_state(d.id), forecast_ids),
+            )
+            for d in switches
+        ],
         "listed": listing is not None,
         "list_error": list_error,
         "fetched_at": request.app.state.switchbot_devices.fetched_at,
         "portable_powers": device_models.portable_powers(session),
-        "forecast_ids": forecast_ids,
-        "controlling_off": control.state == PlugState.OFF,
+        "max_devices": get_settings().max_devices_per_schedule,
         "message": message,
         "errors": errors or [],
         "edit_errors": edit_errors or {},
@@ -158,20 +211,25 @@ async def save_devices(request: Request, session: Session = Depends(get_session)
         elif not item.cloud_enabled:
             errors.append(f"{item.name}：クラウドサービスが無効です（SwitchBot アプリで有効にしてください）")
 
-    controlling = next((d for d in removed if d.id == control.device_id), None)
-    if controlling is not None and _running_schedules(session):
-        errors.append(f"{controlling.name}：実行中のスケジュールが終わってから外してください")
+    for device in removed:
+        if _running_with(session, device.id):
+            errors.append(f"{device.name}：実行中のスケジュールが終わってから外してください")
     if errors:
         return _render(request, session, errors=errors, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
 
     # 本システムが OFF にしている機器は ON に戻してから外す（ON にできなければ外さない）
-    if controlling is not None and control.state == PlugState.OFF:
-        log = control.request(session, PlugState.ON, ControlSource.MANUAL, f"制御対象から外すため ON に戻す（{controlling.name}）")
+    control.bind_devices(session)
+    for device in removed:
+        if control.device_state(device.id) != PlugState.OFF:
+            continue
+        log = control.request(
+            session, PlugState.ON, ControlSource.MANUAL, f"制御対象から外すため ON に戻す（{device.name}）", device_id=device.id
+        )
         if log.result not in (ControlResult.SUCCESS, ControlResult.DRY_RUN):
             return _render(
                 request,
                 session,
-                errors=[f"{controlling.name}：ON に戻せなかったため外しませんでした（{log.error_message}）"],
+                errors=[f"{device.name}：ON に戻せなかったため外しませんでした（{log.error_message}）"],
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             )
 
@@ -180,6 +238,17 @@ async def save_devices(request: Request, session: Session = Depends(get_session)
     for device in removed:
         device.active = False
         device.updated_at = now
+        # 開始前のスケジュール・ルールから外す。0台になったスケジュールは未実行、ルールは無効にする
+        for schedule in _pending_with(session, device.id):
+            schedule.devices = [sd for sd in schedule.devices if sd.device_id != device.id]
+            if not schedule.devices:
+                schedule.status, schedule.status_reason = ScheduleStatus.SKIPPED, "未実行（対象機器がありません）"
+            schedule.updated_at = now
+        for rule in _rules_with(session, device.id):
+            rule.set_devices([i for i in rule.device_ids if i != device.id])
+            if not rule.devices:
+                rule.enabled = False
+            rule.updated_at = now
     for ext in added:
         item = by_external[ext]
         device = device_models.find_device(session, Vendor.SWITCHBOT, ext)
@@ -196,10 +265,14 @@ async def save_devices(request: Request, session: Session = Depends(get_session)
     if removed_ids & set(forecast_ids):
         device_models.set_forecast_schedule_device_ids(session, [i for i in forecast_ids if i not in removed_ids])
 
-    previous = control.device_id
+    if removed:
+        # 手動で変更していない開始前のスケジュールに、対象機器の変更を反映する（推定節約額を含む）
+        settings = get_settings()
+        today = datetime.now(ZoneInfo(settings.tz)).date()
+        optimizer.regenerate_days(session, settings, [today, today + timedelta(days=1)])
     control.bind_devices(session)
-    if control.device_id != previous:
-        request.app.state.plug_monitor.reset()
+    for device in removed:
+        request.app.state.plug_monitor.reset(device.id)
     parts = [f"追加 {len(added)}台"] if added else []
     parts += [f"外した機器 {len(removed)}台"] if removed else []
     return _back(f"制御対象を保存しました（{'・'.join(parts) or '変更なし'}）")
@@ -242,7 +315,7 @@ async def edit_device(device_id: int, request: Request, session: Session = Depen
         if data.power_source_id is not None and data.power_source_id not in {p.id for p in device_models.portable_powers(session)}:
             errors.append("給電先：登録済みのポータブル電源から選んでください")
         changing_source = data.power_source_id != device.power_source_id
-        if changing_source and device.id == control.device_id and _running_schedules(session):
+        if changing_source and _running_with(session, device.id):
             errors.append("給電先：実行中のスケジュールが終わってから変更してください")
     if errors or data is None:
         return _render(request, session, edit_errors={device.id: errors}, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)

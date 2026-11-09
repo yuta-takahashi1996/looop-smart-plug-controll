@@ -31,13 +31,11 @@
 
 <div class="mt-4">
   {% call card("手動操作") %}
-  <div class="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+  <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
     {% set manual = control_mode == "MANUAL" %}
     {% for action, label, path, confirm_text, style in [
       ("start", "自動制御開始", url_for('auto_control', action='start'), "", "border-emerald-700 text-emerald-300 hover:bg-emerald-900/30"),
       ("stop", "自動制御停止", url_for('auto_control', action='stop'), "自動制御を停止しますか？（プラグの状態は変わりません）", "border-slate-600 text-slate-300 hover:bg-slate-800"),
-      ("on", "プラグON", url_for('manual_power', target='on'), "プラグを ON（商用電源）にして自動制御を停止しますか？", "border-sky-700 text-sky-300 hover:bg-sky-900/40"),
-      ("off", "プラグOFF", url_for('manual_power', target='off'), "プラグを OFF（蓄電池）にして自動制御を停止しますか？", "border-amber-700 text-amber-300 hover:bg-amber-900/30"),
     ] %}
     {% set disabled = (action == "start" and not manual) or (action == "stop" and manual) %}
     <form method="post" action="{{ path }}" {% if confirm_text %}onsubmit="return confirm('{{ confirm_text }}')"{% endif %}>
@@ -59,8 +57,8 @@
   </div>
   {% if refresh_result %}{% include "components/refresh_result.html" %}{% endif %}
   <p class="mt-3 text-xs text-slate-500">
-    プラグを手動で操作すると MANUAL モードへ移行し、「自動制御開始」を押すまでスケジュールは実行しません（再起動後も引き継ぎます）。
-    MANUAL 中も安全制御は続き、手動 OFF 中はポータブル電源の残量が下限を下回る前（残量を取得できない場合は最大連続OFF時間）に ON に戻します。
+    機器の ON／OFF は上の「制御機器」から操作します。手動で操作すると MANUAL モードへ移行し、「自動制御開始」を押すまでスケジュールは実行しません（再起動後も引き継ぎます）。
+    MANUAL 中も安全制御は続き、手動 OFF 中の機器は給電先のポータブル電源の残量が下限を下回る前（残量を取得できない・給電先が未設定の場合は最大連続OFF時間）に ON に戻します。
     {% if is_dry_run(request) %}Dry Run 中のため、プラグへのコマンドは送信しません。{% endif %}
   </p>
   {% endcall %}

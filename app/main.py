@@ -58,9 +58,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.switchbot_devices = devices.DeviceListCache()
     app.state.plug_monitor = PlugMonitor(switchbot, SessionLocal)
     jackery = JackeryClient(settings.jackery_account, settings.jackery_password.get_secret_value())
-    # 取得するポータブル電源は機器の登録（bind_devices）で決める
-    battery = BatteryMonitor(jackery, None, SessionLocal)
-    app.state.control = ControlService(settings, SessionLocal, switchbot=switchbot, battery=battery)
+
+    def battery_factory(external_id: str, device_id: int, name: str) -> BatteryMonitor:
+        # 給電先のポータブル電源ごとに作る（同じアカウントのクライアントを共用する）
+        return BatteryMonitor(jackery, external_id, SessionLocal, owner_id=device_id, name=name)
+    app.state.control = ControlService(settings, SessionLocal, switchbot=switchbot, battery_factory=battery_factory)
     _setup_devices(settings, switchbot, jackery, app.state.control)
     if not app.state.plug_monitor.configured:
         logger.warning("SwitchBot の認証情報または制御対象の機器が未設定のため、プラグ状態を確認できません")
