@@ -20,7 +20,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api import auth, control, dashboard, devices, forecast, history, schedule
 from app.api import settings as settings_api
-from app.clients.jackery import JackeryClient
+from app.clients.jackery import JackeryClient, JackeryPortablePower
+from app.clients.portable_power import PortablePowerClient
 from app.clients.switchbot import SwitchBotClient
 from app.config import Settings, get_settings
 from app.models import device as device_models
@@ -58,10 +59,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.switchbot_devices = devices.DeviceListCache()
     app.state.plug_monitor = PlugMonitor(switchbot, SessionLocal)
     jackery = JackeryClient(settings.jackery_account, settings.jackery_password.get_secret_value())
+    # ポータブル電源のクライアント（メーカーごとに1つ。docs/17 §17.8.1）。設定画面の登録でも使う
+    portable_power_clients: dict[device_models.Vendor, PortablePowerClient] = {
+        device_models.Vendor.JACKERY: JackeryPortablePower(jackery),
+    }
+    app.state.portable_power_clients = portable_power_clients
 
     def battery_factory(external_id: str, device_id: int, name: str) -> BatteryMonitor:
-        # 給電先のポータブル電源ごとに作る（同じアカウントのクライアントを共用する）
-        return BatteryMonitor(jackery, external_id, SessionLocal, owner_id=device_id, name=name)
+        # ポータブル電源ごとに作る（同じメーカーのクライアントを共用する）
+        with SessionLocal() as session:
+            device = session.get(device_models.Device, device_id)
+            vendor = device.device_type.vendor if device is not None else None
+        client = portable_power_clients.get(vendor) if vendor is not None else None
+        return BatteryMonitor(client, external_id, SessionLocal, owner_id=device_id, name=name)
     app.state.control = ControlService(settings, SessionLocal, switchbot=switchbot, battery_factory=battery_factory)
     _setup_devices(settings, switchbot, jackery, app.state.control)
     if not app.state.plug_monitor.configured:

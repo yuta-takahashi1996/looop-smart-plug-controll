@@ -196,9 +196,9 @@ class BatterySummary:
 def _battery_summaries(request: Request, session: Session, settings: Settings) -> list[BatterySummary]:
     """給電先のポータブル電源ごとのカード（docs/17 §17.10）。"""
     control: ControlService = request.app.state.control
-    limits = load_control_settings(session, settings)
     summaries = []
     for source in control.power_sources:
+        limits = source.limits
         battery = source.monitor
         reading = battery.last
         eta = None
@@ -220,7 +220,7 @@ def _battery_summaries(request: Request, session: Session, settings: Settings) -
                 read_at=reading.at if reading else None,
                 error=battery.last_error,
                 eta=eta,
-                min_percent=limits.battery_min_percent,
+                min_percent=limits.min_percent,
             )
         )
     return summaries

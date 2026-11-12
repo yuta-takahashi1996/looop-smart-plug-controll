@@ -137,7 +137,7 @@
         </label>
         <p class="text-xs text-slate-500 sm:col-span-2">
           SwitchBot の機器 ID：{{ d.external_id }}。給電先は、この機器を OFF にしたときに家電へ給電するポータブル電源です（残量で ON に戻す判定に使います）。
-          この機器を対象に含むスケジュールの実行中は給電先を変更できません。
+          この機器を対象に含むスケジュールの実行中は給電先を変更できません。ポータブル電源の登録・残量の下限などの設定は<a href="{{ url_for('settings') }}#portable-powers" class="underline">設定画面</a>で行います。
         </p>
         <div class="sm:col-span-2 text-right">
           <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">保存</button>
