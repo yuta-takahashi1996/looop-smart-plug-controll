@@ -4,8 +4,8 @@
 device_types（マスター）で管理する。ポータブル電源だけの設定は portable_power_settings に分ける。
 秘匿情報（API トークン・アカウント）は保存せず、機器 ID・名前・設定値だけを保存する（docs/17 §17.3）。
 
-現在（Phase 9）の制御は1台のまま：制御対象（active）の制御機器のうち先頭の1台（sort_order 順）を制御し、
-その給電先のポータブル電源の残量を使う（`primary_switch`）。
+ポータブル電源は設定画面で登録・削除し（docs/17 §17.8.2）、残量の下限・容量・変換効率は portable_power_settings の
+値で判定する。削除しても行は残す（active=false）。
 """
 
 import enum
@@ -28,6 +28,14 @@ class Vendor(enum.StrEnum):
     SWITCHBOT = "SWITCHBOT"
     JACKERY = "JACKERY"
     FOSSIBOT = "FOSSIBOT"
+
+    @property
+    def label(self) -> str:
+        """画面に表示するメーカー名。"""
+        return _VENDOR_LABELS[self]
+
+
+_VENDOR_LABELS = {Vendor.SWITCHBOT: "SwitchBot", Vendor.JACKERY: "Jackery", Vendor.FOSSIBOT: "FOSSiBOT"}
 
 
 class DeviceCategory(enum.StrEnum):
@@ -184,12 +192,6 @@ def active_switches(session: Session) -> list[Device]:
             .order_by(Device.sort_order, Device.id)
         ).unique()
     )
-
-
-def primary_switch(session: Session) -> Device | None:
-    """現在制御する1台（制御対象の先頭）。複数機器の制御（docs/17 §17.7、Phase 10）までは1台だけ制御する。"""
-    switches = active_switches(session)
-    return switches[0] if switches else None
 
 
 def portable_powers(session: Session) -> list[Device]:
@@ -370,12 +372,28 @@ def migrate_legacy_devices(
     return completed
 
 
+def portable_power_type(session: Session, vendor: Vendor) -> DeviceType | None:
+    """メーカーのポータブル電源の種別（現在はメーカーごとに1種別。Jackery は 1000 New）。"""
+    return session.scalars(
+        select(DeviceType)
+        .where(DeviceType.vendor == vendor, DeviceType.category == DeviceCategory.PORTABLE_POWER)
+        .order_by(DeviceType.id)
+    ).first()
+
+
 def register_portable_power(
-    session: Session, settings: Settings, external_id: str, name: str, *, now: datetime | None = None
+    session: Session,
+    settings: Settings,
+    external_id: str,
+    name: str,
+    *,
+    vendor: Vendor = Vendor.JACKERY,
+    now: datetime | None = None,
 ) -> Device:
-    """Jackery のポータブル電源を登録し、現在の設定値で portable_power_settings を作る。"""
+    """ポータブル電源を登録し、現在の全体の設定値で portable_power_settings を作る（画面からの登録では入力値で上書きする）。"""
     now = now or _now()
-    device_type = find_type(session, Vendor.JACKERY, JACKERY_1000_NEW)
+    device_type = find_type(session, Vendor.JACKERY, JACKERY_1000_NEW) if vendor == Vendor.JACKERY else None
+    device_type = device_type or portable_power_type(session, vendor)
     assert device_type is not None, "種別マスターが初期登録されていません（alembic upgrade head）"
     control = load_control_settings(session, settings)
     device = Device(

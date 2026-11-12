@@ -17,7 +17,6 @@ Jackery は公式 API を公開していないため、Jackery アプリが利�
 """
 
 import base64
-import enum
 import hashlib
 import json
 import logging
@@ -36,6 +35,8 @@ from cryptography.hazmat.primitives import padding as sym_padding
 from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.serialization import load_der_public_key
+
+from app.clients.portable_power import ChargeMode, PortablePowerError, PortablePowerInfo, PortablePowerUnconfirmed
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ _APP_HEADERS = {
 }
 
 
-class JackeryError(Exception):
+class JackeryError(PortablePowerError):
     """通信・API エラー。"""
 
 
@@ -93,36 +94,29 @@ class JackeryNotConfiguredError(JackeryError):
     """アカウントまたはパスワードが未設定。"""
 
 
-class JackeryCommandUnconfirmed(JackeryError):
+class JackeryCommandUnconfirmed(JackeryError, PortablePowerUnconfirmed):
     """コマンドを送ったが、再取得した値が期待どおりにならなかった（成功扱いにしない）。"""
 
 
-class ChargeMode(enum.StrEnum):
-    """充電モード（プロパティ cs）。超急速充電（sfc）は別の項目で、本アプリでは扱わない。"""
+# 充電モードとプロパティ cs の対応。cs=2（custom）など、高速充電・静かな充電以外は不明として扱う。
+# 超急速充電（sfc）は別の項目で、本アプリでは扱わない
+_CS = {ChargeMode.FAST: 0, ChargeMode.SILENT: 1}
 
-    FAST = "FAST"  # cs=0（高速充電。アプリの「高速充電モード」）
-    SILENT = "SILENT"  # cs=1（静かな充電。アプリの「静かな充電モード」）
 
-    @property
-    def cs(self) -> int:
-        return 0 if self is ChargeMode.FAST else 1
+def charge_mode_cs(mode: ChargeMode) -> int:
+    return _CS[mode]
 
-    @property
-    def command_value(self) -> int | str:
-        """コマンドで送る値。実機で反映を確認した形（高速充電は文字列 "0"、静かな充電は数値 1）で送る。
-        数値の 0 で届かなかったのは接続直後の送信が捨てられていたためと考えられるが、未確認のため変えない。"""
-        return "0" if self is ChargeMode.FAST else 1
 
-    @property
-    def label(self) -> str:
-        return "高速充電" if self is ChargeMode.FAST else "静かな充電"
+def charge_mode_command_value(mode: ChargeMode) -> int | str:
+    """コマンドで送る値。実機で反映を確認した形（高速充電は文字列 "0"、静かな充電は数値 1）で送る。
+    数値の 0 で届かなかったのは接続直後の送信が捨てられていたためと考えられるが、未確認のため変えない。"""
+    return "0" if mode is ChargeMode.FAST else 1
 
-    @classmethod
-    def from_cs(cls, value: Any) -> "ChargeMode | None":
-        # cs=2（custom）など、高速充電・静かな充電以外は不明として扱う
-        if isinstance(value, bool) or not isinstance(value, int):
-            return None
-        return {0: cls.FAST, 1: cls.SILENT}.get(value)
+
+def charge_mode_from_cs(value: Any) -> ChargeMode | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return {cs: mode for mode, cs in _CS.items()}.get(value)
 
 
 @dataclass(frozen=True)
@@ -164,7 +158,7 @@ def parse_status(properties: dict[str, Any], device_sn: str | None = None) -> Ba
         time_to_full_hours=_scaled(properties.get("it"), 10),
         battery_temperature_c=_scaled(properties.get("bt"), 10),
         ac_output_on=_flag(properties.get("oac")),
-        charge_mode=ChargeMode.from_cs(properties.get("cs")),
+        charge_mode=charge_mode_from_cs(properties.get("cs")),
         raw=properties,
         device_sn=device_sn,
     )
@@ -523,11 +517,11 @@ class JackeryClient:
         if status.device_sn is None:
             raise JackeryError("ポータブル電源のシリアル番号を取得できませんでした")
         sn = status.device_sn
-        command_body = body if body is not None else {"cs": mode.command_value}
+        command_body = body if body is not None else {"cs": charge_mode_command_value(mode)}
         payload = build_command(sn, CHARGE_SPEED_ACTION_ID, command_body, int(time_module.time() * 1000))
 
         def matches(message_sn: str, properties: dict[str, Any]) -> bool:
-            return message_sn == sn and properties.get("cs") == mode.cs
+            return message_sn == sn and properties.get("cs") == charge_mode_cs(mode)
 
         logger.info("jackery charge mode: sending %s (current cs=%s)", json.dumps(command_body), status.raw.get("cs"))
         try:
@@ -536,7 +530,7 @@ class JackeryClient:
             # mqttPassWord はログインのたびに変わるため、別の場所でログインされた場合に備えて1回だけやり直す
             self.login()
             notified = self._mqtt.publish_and_wait(self._mqtt_credentials(), payload, matches, MQTT_WAIT_SECONDS)
-        logger.info("jackery charge mode: device notification with cs=%s %s", mode.cs, "received" if notified else "not received")
+        logger.info("jackery charge mode: device notification with cs=%s %s", charge_mode_cs(mode), "received" if notified else "not received")
 
         # 機器からの通知の有無によらず、HTTP で再取得した値で照合する
         for attempt in range(VERIFY_ATTEMPTS):
@@ -547,3 +541,31 @@ class JackeryClient:
             self._sleep(VERIFY_WAIT_SECONDS)
         current = status.charge_mode.label if status.charge_mode else "不明"
         raise JackeryCommandUnconfirmed(f"充電モードが{mode.label}になりませんでした（現在：{current}）")
+
+
+class JackeryPortablePower:
+    """JackeryClient をポータブル電源の共通の形（app/clients/portable_power.py）に揃えたもの。"""
+
+    def __init__(self, client: JackeryClient) -> None:
+        self.client = client
+
+    @property
+    def configured(self) -> bool:
+        return self.client.configured
+
+    def list_devices(self) -> list[PortablePowerInfo]:
+        """取得専用アカウントに共有されている機器の一覧。"""
+        result = []
+        for item in self.client.list_devices():
+            external_id = str(item.get("devId") or "")
+            if not external_id:
+                continue
+            model = item.get("productType") or item.get("devModel")
+            result.append(PortablePowerInfo(external_id, str(item.get("devName") or external_id), str(model) if model else None))
+        return result
+
+    def read(self, external_id: str) -> BatteryStatus:
+        return self.client.get_status(external_id)
+
+    def set_charge_mode(self, external_id: str, mode: ChargeMode) -> BatteryStatus:
+        return self.client.set_charge_mode(external_id, mode)

@@ -135,10 +135,15 @@ def saving_between(slots: list[PriceSlot], start_at: datetime, end_at: datetime,
 
 
 def device_params(params: PlanParams, device: Device | None) -> PlanParams:
-    """機器の想定平均負荷（未設定なら全体の設定値）で計算するための値（docs/17 §17.7.5）。"""
-    if device is None or device.estimated_power_w is None:
+    """機器の想定平均負荷と給電先の変換効率（未設定なら全体の設定値）で計算するための値（docs/17 §17.7.5）。"""
+    if device is None:
         return params
-    return replace(params, average_power_w=device.estimated_power_w)
+    if device.estimated_power_w is not None:
+        params = replace(params, average_power_w=device.estimated_power_w)
+    source = device.power_source
+    if source is not None and source.active and source.portable_power is not None:
+        params = replace(params, round_trip_efficiency=source.portable_power.efficiency)
+    return params
 
 
 def devices_saving(slots: list[PriceSlot], start: int, end: int, params: PlanParams, devices: list[Device]) -> float:

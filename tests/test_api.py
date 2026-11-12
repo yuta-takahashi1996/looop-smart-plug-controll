@@ -984,7 +984,7 @@ def test_history_shows_monthly_summaries(logged_in_client: TestClient, session) 
 def test_settings_are_grouped(logged_in_client: TestClient) -> None:
     text = logged_in_client.get("/settings").text
 
-    for title in ("スケジュール", "自動 OFF を許可する時間帯", "OFF 時間の制限", "ポータブル電源", "推定節約額"):
+    for title in ("スケジュール", "自動 OFF を許可する時間帯", "OFF 時間の制限", "ポータブル電源の初期値", "推定節約額"):
         assert f">{title}</legend>" in text
 
 
@@ -1011,38 +1011,41 @@ def test_settings_charge_mode_defaults_apply_to_generated_schedules(logged_in_cl
         ("SILENT", "FAST"),
     ]
 
+    # 充電モードの既定値は「ポータブル電源」の欄で保存する（docs/17 §17.8.2）
+    response = logged_in_client.post(
+        "/settings/charge-mode",
+        data={"charge_mode_start": "KEEP", "charge_mode_end": "SILENT", "csrf_token": csrf_token(logged_in_client)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert [(s.charge_mode_start.value, s.charge_mode_end.value) for s in _tomorrow_schedules(session)] == [
+        ("KEEP", "SILENT"),
+        ("KEEP", "SILENT"),
+    ]
+    # 制御条件の保存では充電モードの既定値を変えない
     response = logged_in_client.post(
         "/settings",
         data={
-            **VALID_SETTINGS,
-            "operation_start": "09:00",
-            "operation_end": "18:00",
-            "charge_mode_start": "KEEP",
-            "charge_mode_end": "SILENT",
+            **{k: v for k, v in VALID_SETTINGS.items() if not k.startswith("charge_mode")},
             "forecast_device_ids": [str(_plug_id())],
             "csrf_token": csrf_token(logged_in_client),
         },
         headers={"HX-Request": "true"},
     )
-
     assert response.status_code == 200
-    assert [(s.charge_mode_start.value, s.charge_mode_end.value) for s in _tomorrow_schedules(session)] == [
-        ("KEEP", "SILENT"),
-        ("KEEP", "SILENT"),
-    ]
+    assert _tomorrow_schedules(session)[0].charge_mode_start.value == "KEEP"
     text = logged_in_client.get("/settings").text
     assert '<option value="KEEP" selected>変更しない</option>' in text
 
 
 def test_settings_rejects_unknown_charge_mode(logged_in_client: TestClient) -> None:
     response = logged_in_client.post(
-        "/settings",
-        data={**VALID_SETTINGS, "charge_mode_start": "TURBO", "csrf_token": csrf_token(logged_in_client)},
-        headers={"HX-Request": "true"},
+        "/settings/charge-mode",
+        data={"charge_mode_start": "TURBO", "charge_mode_end": "FAST", "csrf_token": csrf_token(logged_in_client)},
     )
 
-    assert response.status_code == 422
-    assert "充電モード（開始時）" in response.text
+    assert "充電モード（開始時）：選択肢から選んでください" in response.text
 
 
 def test_change_schedule_charge_mode(logged_in_client: TestClient, session) -> None:
