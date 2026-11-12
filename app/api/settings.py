@@ -25,11 +25,11 @@ router = APIRouter()
 # 画面に表示する項目（docs/05-web-ui.md §5.7）。グループごとに (キー, ラベル, 単位, input 属性, 説明)
 GROUPS: list[tuple[str, str, list[tuple[str, str, str, dict[str, Any], str]]]] = [
     (
-        "運用時間",
-        "でんき注意報のスケジュールはこの時間内に限って作ります（でんき警報は残量を取得できる間は時間外も実行します）。",
+        "自動 OFF を許可する時間帯",
+        "でんき注意報と任意 OFF のスケジュールは、この時間帯の中でだけ実行します。でんき警報は残量を取得できる間は時間外も実行し、取得できない間は時間外に ON に戻します。",
         [
-            ("operation_start", "運用開始時刻", "", {"type": "time"}, ""),
-            ("operation_end", "運用終了時刻", "", {"type": "time"}, "この時刻を過ぎると ON に戻します。"),
+            ("operation_start", "許可開始時刻", "", {"type": "time"}, ""),
+            ("operation_end", "許可終了時刻", "", {"type": "time"}, "この時刻を過ぎると ON に戻します。"),
         ],
     ),
     (
@@ -94,6 +94,7 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
         "auto_enable": "on" if data.auto_enable else "",
         "operation_start": data.operation_start.strftime("%H:%M"),
         "operation_end": data.operation_end.strftime("%H:%M"),
+        "off_all_day": "on" if data.off_all_day else "",
         "round_trip_efficiency": f"{data.round_trip_efficiency * 100:g}",
         "max_continuous_off_minutes": str(data.max_continuous_off_minutes),
         "max_daily_off_minutes": str(data.max_daily_off_minutes),
@@ -108,7 +109,9 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
 
 def _parse_form(form: dict[str, str]) -> ControlSettings:
     values: dict[str, Any] = {key: form.get(key, "").strip() for key in _LABELS}
-    values["auto_enable"] = form.get("auto_enable") == "on"  # チェックボックスは未チェックだと送信されない
+    # チェックボックスは未チェックだと送信されない
+    values["auto_enable"] = form.get("auto_enable") == "on"
+    values["off_all_day"] = form.get("off_all_day") == "on"
     try:
         values["round_trip_efficiency"] = float(values["round_trip_efficiency"]) / 100  # 画面では％で入力する
     except ValueError:
@@ -222,7 +225,7 @@ async def update_settings(request: Request, session: Session = Depends(get_sessi
         return _render(
             request,
             session,
-            {key: form.get(key, "") for key in _LABELS} | {"auto_enable": form.get("auto_enable", "")},
+            {key: form.get(key, "") for key in _LABELS} | {"auto_enable": form.get("auto_enable", ""), "off_all_day": form.get("off_all_day", "")},
             errors=errors,
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             forecast_device_ids=device_ids,

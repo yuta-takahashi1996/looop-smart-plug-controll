@@ -320,13 +320,13 @@ def test_disabled_schedule_is_not_executed(session: Session, control: ControlSer
 
 
 def test_warning_outside_operation_hours_is_not_started_without_battery(session: Session, control: ControlService) -> None:
-    _prepare(session, {range(38, 40): W})  # 19:00〜20:00（運用時間外）
+    _prepare(session, {range(38, 40): W})  # 19:00〜20:00（許可時間外）
 
     control.run_cycle(_at(19))
 
     assert _logs(session) == [("SAFETY", None, "ON", "DRY_RUN")]
     s = _schedules(session)[0]
-    assert s.status == ScheduleStatus.ABORTED and "運用時間外" in s.status_reason
+    assert s.status == ScheduleStatus.ABORTED and "許可時間外" in s.status_reason
 
 
 def test_warning_is_stopped_at_continuous_limit_without_battery(session: Session, control: ControlService) -> None:
@@ -378,14 +378,14 @@ def test_custom_off_runs_without_forecast(session: Session, control: ControlServ
 def test_custom_off_is_limited_like_advisory(session: Session, control: ControlService) -> None:
     _custom_rule(session, "OFF", 12, 13)
     s = _schedules(session)[0]
-    s.start_at, s.end_at = _at(17, 0, 0), _at(19, 0, 0)  # 運用時間外にずれた場合も実行時に止める
+    s.start_at, s.end_at = _at(17, 0, 0), _at(19, 0, 0)  # 許可時間外にずれた場合も実行時に止める
     session.commit()
 
     for t in [_at(17, 30), _at(18)]:
         control.run_cycle(t)
 
     s = _schedules(session)[0]
-    assert s.status == ScheduleStatus.ABORTED and "運用時間外" in s.status_reason
+    assert s.status == ScheduleStatus.ABORTED and "許可時間外" in s.status_reason
     assert [log[2] for log in _logs(session)] == ["ON", "OFF", "ON"]
 
 
@@ -737,7 +737,7 @@ def test_running_schedule_is_stopped_before_battery_runs_out(session: Session) -
 def test_warning_runs_outside_operation_hours_when_battery_known(session: Session) -> None:
     plug = FakePlug("ON")
     control = _real_control(plug, FakeBattery([(90, 150.0)]))
-    _prepare(session, {range(38, 40): W})  # 19:00〜20:00（運用時間外）
+    _prepare(session, {range(38, 40): W})  # 19:00〜20:00（許可時間外）
 
     control.run_cycle(_at(19))
 

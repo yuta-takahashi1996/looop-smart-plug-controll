@@ -58,6 +58,16 @@
   <fieldset class="rounded-lg border border-slate-800 p-3">
     <legend class="px-1 text-sm font-semibold text-slate-300">{{ title }}</legend>
     <p class="mb-3 text-xs text-slate-500">{{ description }}</p>
+    {% if fields[0][0] == "operation_start" %}
+    <label class="mb-3 flex items-start gap-3 text-sm">
+      <input type="checkbox" name="off_all_day" {{ "checked" if values.get("off_all_day") == "on" }}
+             class="mt-0.5 h-4 w-4 accent-sky-500">
+      <span>
+        <span class="font-medium">終日許可する</span>
+        <span class="mt-1 block text-xs text-slate-400">有効にすると下の時刻は使わず、24時間いつでも自動 OFF を許可します。OFF 時間の上限と残量の下限は引き続き適用します。</span>
+      </span>
+    </label>
+    {% endif %}
     <div class="grid gap-4 sm:grid-cols-2">
       {% for key, label, unit, attrs, help in fields %}
       <label class="block text-sm">
