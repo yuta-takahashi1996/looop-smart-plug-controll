@@ -172,15 +172,25 @@ TUNING_LOOKBACK_DAYS = 30
 TUNING_MIN_DROP_PERCENT = 5  # 残量は整数％のため、減少が小さい回は効率の推定から除く
 
 
-def tuning_hints(session: Session, settings: Settings, capacity_wh: float, today: date) -> dict:
-    """制御パラメータ調整の目安：直近の OFF の実測から、平均消費電力と変換効率を推定する。"""
+def tuning_hints(
+    session: Session, settings: Settings, capacity_wh: float, today: date, *, power_source_id: int | None = None
+) -> dict:
+    """制御パラメータ調整の目安：直近の OFF の実測から、平均消費電力と変換効率を推定する。
+
+    power_source_id を指定すると、そのポータブル電源から給電した OFF だけで推定する（設定画面のポータブル電源ごとの表示）。
+    """
     recent = list(
         session.scalars(
             select(ControlSchedule).where(ControlSchedule.schedule_date >= today - timedelta(days=TUNING_LOOKBACK_DAYS))
         )
     )
     schedules = [
-        sd for sd in measured_rows(recent) if sd.measured_power_w is not None and sd.executed_start_at and sd.executed_end_at
+        sd
+        for sd in measured_rows(recent)
+        if sd.measured_power_w is not None
+        and sd.executed_start_at
+        and sd.executed_end_at
+        and (power_source_id is None or sd.power_source_id == power_source_id)
     ]
     hours = [(s.executed_end_at - s.executed_start_at).total_seconds() / 3600 for s in schedules]  # type: ignore[operator]
     total_hours = sum(hours)

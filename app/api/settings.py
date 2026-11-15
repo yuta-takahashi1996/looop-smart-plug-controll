@@ -1,5 +1,7 @@
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request, status
@@ -10,10 +12,13 @@ from sqlalchemy.orm import Session
 
 from app.api.auth import CSRF_FORM_FIELD, verify_csrf
 from app.api.control import REAL_CONTROL_CONFIRMATION
+from app.api.devices import running_with
+from app.clients.portable_power import PortablePowerClient, PortablePowerError
 from app.config import get_settings
 from app.models import device as device_models
+from app.models.device import Device, PortablePowerSettings, Vendor
 from app.models.forecast import AdjustmentCategory, PriceAdjustment
-from app.models.schedule import ChargeModeOption
+from app.models.schedule import ChargeModeOption, PlugState
 from app.models.settings import ControlSettings, load_control_settings, save_control_settings
 from app.repositories.database import get_session
 from app.services import forecast as forecast_service
@@ -48,17 +53,17 @@ GROUPS: list[tuple[str, str, list[tuple[str, str, str, dict[str, Any], str]]]] =
         ],
     ),
     (
-        "ポータブル電源",
-        "残量が下限を下回る前（次の取得時の予測を含む）に ON に戻します。",
+        "ポータブル電源の初期値",
+        "ポータブル電源を追加するときの初期値です。登録済みのポータブル電源は、下の「ポータブル電源」でそれぞれの値を設定します。",
         [
             ("battery_min_percent", "残量の下限", "%", {"type": "number", "min": 0, "max": 100, "step": 1}, ""),
-            ("battery_capacity_wh", "容量", "Wh", {"type": "number", "min": 1, "step": 1}, "Jackery 1000 New は 1070Wh。"),
+            ("battery_capacity_wh", "容量", "Wh", {"type": "number", "min": 1, "step": 1}, "種別の公称容量がない場合に使います。"),
             (
                 "round_trip_efficiency",
                 "変換効率",
                 "%",
                 {"type": "number", "min": 1, "max": 100, "step": 1},
-                "残量の減り方の予測と、推定節約額（充電に必要な電力量）の計算に使います。低いほど安全側です。",
+                "給電先が未設定の機器の推定節約額と、ダッシュボードの蓄電池利用時の実効単価にも使います。",
             ),
         ],
     ),
@@ -177,6 +182,7 @@ def _render(
             session, settings, control.battery_capacity_wh, datetime.now(ZoneInfo(settings.tz)).date()
         ),
     }
+    context |= _portable_power_context(request, session, values)
     # HTMX からの送信ではフォーム部分のみ返す
     if request.headers.get("HX-Request"):
         template = "components/settings_form.html"
@@ -211,6 +217,10 @@ async def update_settings(request: Request, session: Session = Depends(get_sessi
     raw = await request.form()
     form = {key: value for key, value in raw.items() if isinstance(value, str)}
     form.pop(CSRF_FORM_FIELD, None)
+    # 充電モードの既定値は「ポータブル電源」の欄で保存する（docs/17 §17.8.2）。この画面の送信では現在の値を引き継ぐ
+    current = load_control_settings(session, get_settings())
+    for key, _ in CHARGE_MODE_FIELDS:
+        form.setdefault(key, getattr(current, key).value)
     # でんき予報のスケジュールの対象機器（docs/17 §17.6.1）。0台なら、でんき予報のスケジュールを作らない
     device_ids = list(dict.fromkeys(int(v) for v in raw.getlist("forecast_device_ids") if isinstance(v, str) and v.isdigit()))
     device_errors = optimizer.validate_device_ids(session, get_settings(), device_ids) if device_ids else []
@@ -300,3 +310,280 @@ def delete_adjustment(adjustment_id: int, session: Session = Depends(get_session
         session.delete(adjustment)
         session.commit()
     return RedirectResponse("/settings#adjustments", status_code=status.HTTP_303_SEE_OTHER)
+
+
+
+# --- ポータブル電源（docs/17-multi-device.md §17.8.2） ---
+
+
+@dataclass(frozen=True)
+class PortablePowerRow:
+    device: Device
+    settings: PortablePowerSettings
+    linked: list[Device]  # 紐づく制御機器（制御対象のもの）
+    hints: dict
+    delete_confirm: str  # 削除の確認ダイアログに出す内容
+
+
+def _portable_power_clients(request: Request) -> dict[Vendor, PortablePowerClient]:
+    return getattr(request.app.state, "portable_power_clients", {})
+
+
+def configured_vendors(request: Request) -> list[Vendor]:
+    """アカウントが設定されているメーカー（未設定のメーカーは選択肢に出さない）。"""
+    return [vendor for vendor, client in _portable_power_clients(request).items() if client.configured]
+
+
+def _portable_power_context(request: Request, session: Session, values: dict[str, str]) -> dict[str, Any]:
+    settings = get_settings()
+    today = datetime.now(ZoneInfo(settings.tz)).date()
+    switches = device_models.active_switches(session)
+    rows = []
+    for device in device_models.portable_powers(session):
+        pp = device.portable_power
+        if pp is None:
+            continue
+        linked = [d for d in switches if d.power_source_id == device.id]
+        confirm = f"紐づくプラグ {len(linked)}台の給電先を未設定に戻してから削除します。" if linked else ""
+        rows.append(
+            PortablePowerRow(
+                device,
+                pp,
+                linked,
+                maintenance.tuning_hints(session, settings, pp.capacity_wh, today, power_source_id=device.id),
+                confirm,
+            )
+        )
+    return {
+        "portable_power_rows": rows,
+        "portable_power_switches": switches,
+        "portable_power_vendors": configured_vendors(request),
+        "charge_mode_values": {key: values.get(key, "") for key, _ in CHARGE_MODE_FIELDS},
+    }
+
+
+def _back(message: str, *, error: bool = False) -> RedirectResponse:
+    key = "error" if error else "message"
+    return RedirectResponse(f"/settings?{key}={quote(message)}#portable-powers", status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _regenerate(session: Session) -> None:
+    """推定節約額（給電先の変換効率）を、手動で変更していない開始前のスケジュールへ反映する。"""
+    settings = get_settings()
+    today = datetime.now(ZoneInfo(settings.tz)).date()
+    optimizer.regenerate_days(session, settings, [today, today + timedelta(days=1)])
+
+
+@router.post("/settings/charge-mode", name="save_charge_mode_defaults", dependencies=[Depends(verify_csrf)])
+async def save_charge_mode_defaults(request: Request, session: Session = Depends(get_session)) -> RedirectResponse:
+    """でんき予報のスケジュールの充電モードの既定値（全体で1つ。docs/17 §17.8.3 の D-6）。"""
+    form = await request.form()
+    current = load_control_settings(session, get_settings())
+    values = current.model_dump()
+    for key, label in CHARGE_MODE_FIELDS:
+        raw = form.get(key)
+        if raw not in {option.value for option in ChargeModeOption}:
+            return _back(f"充電モード（{label}）：選択肢から選んでください", error=True)
+        values[key] = ChargeModeOption(str(raw))
+    save_control_settings(session, ControlSettings.model_validate(values))
+    _regenerate(session)
+    return _back("充電モードの既定値を保存しました")
+
+
+class PortablePowerInput(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+    capacity_wh: float = Field(gt=0, le=100000)
+    min_percent: int = Field(ge=0, le=100)
+    efficiency_percent: float = Field(ge=1, le=100)
+    charge_mode_enabled: bool = False
+    note: str | None = Field(default=None, max_length=200)
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def _empty_to_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+
+_PORTABLE_POWER_LABELS = {
+    "name": "名前",
+    "capacity_wh": "容量",
+    "min_percent": "残量の下限",
+    "efficiency_percent": "変換効率",
+    "note": "説明",
+}
+
+
+def _parse_portable_power(form: Any) -> tuple[PortablePowerInput | None, list[int], list[str]]:
+    """入力値・紐づくプラグ（devices.id）・エラー。"""
+    values = {key: str(form.get(key) or "").strip() for key in _PORTABLE_POWER_LABELS}
+    values["charge_mode_enabled"] = form.get("charge_mode_enabled") == "on"
+    linked = list(dict.fromkeys(int(v) for v in form.getlist("linked_ids") if isinstance(v, str) and v.isdigit()))
+    try:
+        return PortablePowerInput.model_validate(values), linked, []
+    except ValidationError as exc:
+        errors = []
+        for error in exc.errors():
+            field = str(error["loc"][0]) if error["loc"] else ""
+            errors.append(f"{_PORTABLE_POWER_LABELS.get(field, field)}：{error['msg'].removeprefix('Value error, ')}")
+        return None, linked, errors
+
+
+def _check_name(session: Session, name: str, exclude_id: int | None) -> list[str]:
+    duplicated = any(p.name == name and p.id != exclude_id for p in device_models.portable_powers(session))
+    return ["名前：ほかのポータブル電源と同じ名前は使えません"] if duplicated else []
+
+
+def _link_changes(session: Session, source: Device | None, linked: list[int]) -> tuple[list[Device], list[Device], list[str]]:
+    """紐づくプラグの変更（新たに紐づける機器・外す機器・エラー）。実行中のスケジュールの対象機器は変更できない。"""
+    switches = {d.id: d for d in device_models.active_switches(session)}
+    errors = [f"紐づくプラグ：制御対象の機器から選んでください（{i}）" for i in linked if i not in switches]
+    current = {d.id for d in switches.values() if source is not None and d.power_source_id == source.id}
+    added = [switches[i] for i in linked if i in switches and i not in current]
+    removed = [switches[i] for i in current if i not in linked]
+    for device in added + removed:
+        if running_with(session, device.id):
+            errors.append(f"紐づくプラグ：{device.name} は実行中のスケジュールが終わってから変更してください")
+    return added, removed, errors
+
+
+def _apply(session: Session, device: Device, data: PortablePowerInput, added: list[Device], removed: list[Device]) -> None:
+    now = datetime.now(UTC)
+    device.name = data.name
+    device.note = data.note
+    device.updated_at = now
+    pp = device.portable_power
+    assert pp is not None
+    pp.capacity_wh = data.capacity_wh
+    pp.min_percent = data.min_percent
+    pp.efficiency = data.efficiency_percent / 100
+    # 種別が充電モードの変更に対応していなければ切り替えない
+    pp.charge_mode_enabled = data.charge_mode_enabled and device.device_type.charge_mode
+    for switch in added:
+        switch.power_source_id, switch.updated_at = device.id, now
+    for switch in removed:
+        switch.power_source_id, switch.updated_at = None, now
+    session.commit()
+
+
+@router.get("/settings/portable-powers/new", response_class=HTMLResponse, name="new_portable_power")
+def new_portable_power(request: Request, vendor: str = "", session: Session = Depends(get_session)) -> HTMLResponse:
+    """「＋ポータブル電源を追加」：メーカーのアカウントの機器一覧（未登録のもの）を取得して追加の入力欄を返す（HTMX）。"""
+    context: dict[str, Any] = {"vendor": vendor, "candidates": [], "error": None}
+    client = _portable_power_clients(request).get(Vendor(vendor)) if vendor in Vendor.__members__ else None
+    if client is None or not client.configured:
+        context["error"] = "このメーカーのアカウントが未設定です（環境変数で設定してください）"
+    else:
+        try:
+            listed = client.list_devices()
+        except PortablePowerError as exc:
+            context["error"] = f"機器の一覧を取得できませんでした：{exc}"
+        else:
+            registered = {d.external_id for d in device_models.portable_powers(session) if d.device_type.vendor == vendor}
+            context["candidates"] = [d for d in listed if d.external_id not in registered]
+            device_type = device_models.portable_power_type(session, Vendor(vendor))
+            control = load_control_settings(session, get_settings())
+            context["defaults"] = {
+                "capacity_wh": f"{(device_type.default_capacity_wh if device_type else None) or control.battery_capacity_wh:g}",
+                "min_percent": str(control.battery_min_percent),
+                "efficiency_percent": f"{control.round_trip_efficiency * 100:g}",
+                "charge_mode": bool(device_type and device_type.charge_mode),
+            }
+            context["switches"] = device_models.active_switches(session)
+    return templates.TemplateResponse(request, "components/portable_power_new.html", context)
+
+
+@router.post("/settings/portable-powers", name="create_portable_power", dependencies=[Depends(verify_csrf)])
+async def create_portable_power(request: Request, session: Session = Depends(get_session)) -> RedirectResponse:
+    form = await request.form()
+    vendor_raw = str(form.get("vendor") or "")
+    external_id = str(form.get("external_id") or "").strip()
+    data, linked, errors = _parse_portable_power(form)
+    client = _portable_power_clients(request).get(Vendor(vendor_raw)) if vendor_raw in Vendor.__members__ else None
+    if client is None or not client.configured:
+        return _back("このメーカーのアカウントが未設定です（環境変数で設定してください）", error=True)
+    vendor = Vendor(vendor_raw)
+    if not external_id:
+        errors.append("機器：一覧から選んでください")
+    else:
+        try:
+            listed = {d.external_id for d in client.list_devices()}
+        except PortablePowerError as exc:
+            return _back(f"機器の一覧を取得できないため追加できません：{exc}", error=True)
+        if external_id not in listed:
+            errors.append("機器：アカウントの機器一覧に見つかりません。一覧を取得し直してください")
+        existing = device_models.find_device(session, vendor, external_id)
+        if existing is not None and existing.active:
+            errors.append("機器：すでに登録されています")
+    if data is not None:
+        errors += _check_name(session, data.name, None)
+    added, removed, link_errors = _link_changes(session, None, linked)
+    errors += link_errors
+    if errors or data is None:
+        return _back("ポータブル電源を追加できませんでした：" + "、".join(errors), error=True)
+
+    device = device_models.find_device(session, vendor, external_id)
+    now = datetime.now(UTC)
+    if device is None:
+        device = device_models.register_portable_power(session, get_settings(), external_id, data.name, vendor=vendor, now=now)
+    else:
+        # 削除済み（active=false）の機器を登録し直す
+        device.active = True
+        device.sort_order = device_models.next_sort_order(session)
+        if device.portable_power is None:
+            control = load_control_settings(session, get_settings())
+            session.add(
+                PortablePowerSettings(
+                    device_id=device.id,
+                    capacity_wh=control.battery_capacity_wh,
+                    min_percent=control.battery_min_percent,
+                    efficiency=control.round_trip_efficiency,
+                )
+            )
+            session.flush()
+            session.refresh(device)
+    _apply(session, device, data, added, removed)
+    request.app.state.control.bind_devices(session)
+    _regenerate(session)
+    return _back(f"{device.name} を追加しました")
+
+
+@router.post("/settings/portable-powers/{device_id}", name="edit_portable_power", dependencies=[Depends(verify_csrf)])
+async def edit_portable_power(device_id: int, request: Request, session: Session = Depends(get_session)) -> RedirectResponse:
+    device = session.get(Device, device_id)
+    if device is None or not device.active or device.portable_power is None:
+        return _back("ポータブル電源が見つかりません", error=True)
+    data, linked, errors = _parse_portable_power(await request.form())
+    if data is not None:
+        errors += _check_name(session, data.name, device.id)
+    added, removed, link_errors = _link_changes(session, device, linked)
+    errors += link_errors
+    if errors or data is None:
+        return _back(f"{device.name} を保存できませんでした：" + "、".join(errors), error=True)
+    _apply(session, device, data, added, removed)
+    request.app.state.control.bind_devices(session)
+    _regenerate(session)
+    return _back(f"{device.name} を保存しました")
+
+
+@router.post("/settings/portable-powers/{device_id}/delete", name="delete_portable_power", dependencies=[Depends(verify_csrf)])
+def delete_portable_power(device_id: int, request: Request, session: Session = Depends(get_session)) -> RedirectResponse:
+    """紐づくプラグの給電先を未設定に戻してから削除する（active=false）。OFF 中の機器の給電先は削除できない。"""
+    device = session.get(Device, device_id)
+    if device is None or not device.active:
+        return _back("ポータブル電源が見つかりません", error=True)
+    control = request.app.state.control
+    control.bind_devices(session)
+    linked = [d for d in device_models.active_switches(session) if d.power_source_id == device.id]
+    off = [d.name for d in linked if control.device_state(d.id) == PlugState.OFF or running_with(session, d.id)]
+    if off:
+        return _back(f"{'・'.join(off)} が OFF 中（実行中のスケジュールの対象）のため、{device.name} は削除できません", error=True)
+    now = datetime.now(UTC)
+    for switch in linked:
+        switch.power_source_id, switch.updated_at = None, now
+    device.active = False
+    device.updated_at = now
+    session.commit()
+    control.bind_devices(session)
+    _regenerate(session)
+    suffix = f"（紐づくプラグ {len(linked)}台の給電先を未設定にしました）" if linked else ""
+    return _back(f"{device.name} を削除しました{suffix}")

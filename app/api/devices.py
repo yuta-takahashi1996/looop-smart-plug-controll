@@ -91,7 +91,7 @@ def _listing(request: Request, session: Session, *, force: bool = False) -> tupl
     return device_models.ensure_switchbot_types(session, items), None
 
 
-def _running_with(session: Session, device_id: int) -> list[ControlSchedule]:
+def running_with(session: Session, device_id: int) -> list[ControlSchedule]:
     """機器を対象に含む実行中のスケジュール（その機器がまだ終わっていないもの）。"""
     running = session.scalars(select(ControlSchedule).where(ControlSchedule.status == ScheduleStatus.RUNNING))
     return [
@@ -212,7 +212,7 @@ async def save_devices(request: Request, session: Session = Depends(get_session)
             errors.append(f"{item.name}：クラウドサービスが無効です（SwitchBot アプリで有効にしてください）")
 
     for device in removed:
-        if _running_with(session, device.id):
+        if running_with(session, device.id):
             errors.append(f"{device.name}：実行中のスケジュールが終わってから外してください")
     if errors:
         return _render(request, session, errors=errors, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)
@@ -315,7 +315,7 @@ async def edit_device(device_id: int, request: Request, session: Session = Depen
         if data.power_source_id is not None and data.power_source_id not in {p.id for p in device_models.portable_powers(session)}:
             errors.append("給電先：登録済みのポータブル電源から選んでください")
         changing_source = data.power_source_id != device.power_source_id
-        if changing_source and _running_with(session, device.id):
+        if changing_source and running_with(session, device.id):
             errors.append("給電先：実行中のスケジュールが終わってから変更してください")
     if errors or data is None:
         return _render(request, session, edit_errors={device.id: errors}, status_code=status.HTTP_422_UNPROCESSABLE_CONTENT)

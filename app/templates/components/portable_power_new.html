@@ -1,0 +1,64 @@
+{# 「＋ポータブル電源を追加」で表示する入力欄（HTMX で差し込む。docs/17 §17.8.2） #}
+{% set input_class = "mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 tabular-nums focus:border-sky-500 focus:outline-none" %}
+{% if error %}
+<p class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-sm text-rose-200" role="alert">{{ error }}</p>
+{% elif not candidates %}
+<p class="text-sm text-slate-400">追加できる機器がありません（アカウントに共有されている機器はすべて登録済みです）。</p>
+{% else %}
+<form method="post" action="{{ url_for('create_portable_power') }}" class="grid gap-3 rounded-lg border border-slate-700 p-3 sm:grid-cols-3" data-portable-power="new">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <input type="hidden" name="vendor" value="{{ vendor }}">
+  <label class="block text-sm">
+    <span class="text-slate-400">機器</span>
+    <select name="external_id" required class="{{ input_class }}"
+            onchange="const n = this.form.elements.name; if (!n.dataset.edited) n.value = this.selectedOptions[0].dataset.name;">
+      {% for c in candidates %}
+      <option value="{{ c.external_id }}" data-name="{{ c.name }}">{{ c.name }}{% if c.model %}（{{ c.model }}）{% endif %} ID: …{{ c.external_id[-4:] }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="block text-sm sm:col-span-2">
+    <span class="text-slate-400">名前</span>
+    <input name="name" required maxlength="50" value="{{ candidates[0].name }}" oninput="this.dataset.edited = '1'" class="{{ input_class }}">
+  </label>
+  <label class="block text-sm">
+    <span class="text-slate-400">容量（Wh）</span>
+    <input name="capacity_wh" type="number" min="1" step="1" required value="{{ defaults.capacity_wh }}" class="{{ input_class }}">
+  </label>
+  <label class="block text-sm">
+    <span class="text-slate-400">残量の下限（%）</span>
+    <input name="min_percent" type="number" min="0" max="100" step="1" required value="{{ defaults.min_percent }}" class="{{ input_class }}">
+  </label>
+  <label class="block text-sm">
+    <span class="text-slate-400">変換効率（%）</span>
+    <input name="efficiency_percent" type="number" min="1" max="100" step="1" required value="{{ defaults.efficiency_percent }}" class="{{ input_class }}">
+  </label>
+  {% if defaults.charge_mode %}
+  <label class="inline-flex items-center gap-2 text-sm sm:col-span-3">
+    <input type="checkbox" name="charge_mode_enabled" checked class="h-4 w-4 accent-sky-500">
+    充電モードをスケジュールに合わせて切り替える
+  </label>
+  {% endif %}
+  <div class="text-sm sm:col-span-3">
+    <span class="text-slate-400">紐づくプラグ</span>
+    <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+      {% for s in switches %}
+      <label class="inline-flex items-center gap-1.5">
+        <input type="checkbox" name="linked_ids" value="{{ s.id }}"
+               {% if s.power_source %}data-move-from="{{ s.power_source.name }}" data-switch-name="{{ s.name }}"{% endif %} class="accent-sky-500">
+        {{ s.name }}{% if s.power_source %}<span class="text-xs text-slate-500">（現在：{{ s.power_source.name }}）</span>{% endif %}
+      </label>
+      {% else %}
+      <span class="text-xs text-slate-500">制御対象の機器がありません</span>
+      {% endfor %}
+    </div>
+  </div>
+  <label class="block text-sm sm:col-span-3">
+    <span class="text-slate-400">説明（任意）</span>
+    <input name="note" maxlength="200" class="{{ input_class }}">
+  </label>
+  <div class="text-right sm:col-span-3">
+    <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">追加</button>
+  </div>
+</form>
+{% endif %}

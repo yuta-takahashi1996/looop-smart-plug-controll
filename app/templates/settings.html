@@ -1,90 +1,7 @@
 {% extends "base.html" %}
 {% from "components/ui.html" import card %}
 
-{% block title %}設定 | Looop Smart Plug Controller
-<div class="mt-4">
-  {% call card("請求単価の加算額", id="adjustments") %}
-  <p class="text-sm text-slate-300">
-    請求単価 ＝ でんき予報の電源料金単価 ＋ 対象日に有効な加算額の合計。本日（{{ today.strftime("%m/%d") }}）の加算額：
-    <span class="font-semibold tabular-nums">{{ "%+.2f"|format(adjustment_total_today) }} 円/kWh</span>
-  </p>
-  <p class="mt-1 text-xs text-slate-500">
-    サービス料金・託送従量料金相当額・再エネ賦課金を正の値、国の補助金などの値引きを負の値で、使用日ベースの適用期間付きで登録します（税込・円/kWh）。
-    Looop の単価に関わるお知らせはダッシュボードに表示されます。
-  </p>
-
-  {% if adjustments %}
-  <div class="-mx-4 mt-4 overflow-x-auto">
-    <table class="w-full min-w-[40rem] text-left text-sm">
-      <thead class="whitespace-nowrap border-b border-slate-800 text-xs text-slate-400">
-        <tr>
-          <th class="px-4 py-2 font-medium">種類</th>
-          <th class="px-4 py-2 text-right font-medium">金額</th>
-          <th class="px-4 py-2 font-medium">適用期間</th>
-          <th class="px-4 py-2 font-medium">メモ</th>
-          <th class="px-4 py-2"></th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-800/70">
-        {% for a in adjustments %}
-        <tr class="{{ '' if a.id in active_adjustment_ids else 'text-slate-500' }}">
-          <td class="whitespace-nowrap px-4 py-2">
-            {{ adjustment_labels[a.category] }}
-            {% if a.id in active_adjustment_ids %}<span class="ml-1 text-xs text-emerald-300">適用中</span>{% endif %}
-          </td>
-          <td class="whitespace-nowrap px-4 py-2 text-right tabular-nums">{{ "%+.2f"|format(a.amount) }} 円/kWh</td>
-          <td class="whitespace-nowrap px-4 py-2 tabular-nums">{{ a.effective_from.strftime("%Y/%m/%d") }} 〜 {{ a.effective_to.strftime("%Y/%m/%d") if a.effective_to else "" }}</td>
-          <td class="px-4 py-2">{{ a.note }}</td>
-          <td class="px-4 py-2 text-right">
-            <form method="post" action="{{ url_for('delete_adjustment', adjustment_id=a.id) }}" onsubmit="return confirm('この加算額を削除しますか？')">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-              <button type="submit" class="text-xs text-rose-300 hover:underline">削除</button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% endif %}
-
-  {% if adjustment_errors %}
-  <ul class="mt-4 list-inside list-disc rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200" role="alert">
-    {% for message in adjustment_errors %}<li>{{ message }}</li>{% endfor %}
-  </ul>
-  {% endif %}
-
-  {% set f = adjustment_form %}
-  {% set input_class = "mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 [color-scheme:dark] focus:border-sky-500 focus:outline-none" %}
-  <form method="post" action="{{ url_for('create_adjustment') }}" class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6 lg:items-end">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
-    <label class="block text-sm lg:col-span-1">
-      <span class="text-slate-400">種類</span>
-      <select name="category" class="{{ input_class }}">
-        {% for c in categories %}<option value="{{ c.value }}" {{ 'selected' if f.get('category') == c.value }}>{{ adjustment_labels[c] }}</option>{% endfor %}
-      </select>
-    </label>
-    <label class="block text-sm">
-      <span class="text-slate-400">金額（円/kWh）</span>
-      <input name="amount" type="number" step="0.01" required value="{{ f.get('amount', '') }}" placeholder="値引きは負の値" class="{{ input_class }} tabular-nums">
-    </label>
-    <label class="block text-sm">
-      <span class="text-slate-400">適用開始日</span>
-      <input name="effective_from" type="date" required value="{{ f.get('effective_from', '') }}" class="{{ input_class }}">
-    </label>
-    <label class="block text-sm">
-      <span class="text-slate-400">適用終了日（任意）</span>
-      <input name="effective_to" type="date" value="{{ f.get('effective_to', '') }}" class="{{ input_class }}">
-    </label>
-    <label class="block text-sm">
-      <span class="text-slate-400">メモ（任意）</span>
-      <input name="note" maxlength="200" value="{{ f.get('note', '') }}" placeholder="例：2026/11 託送料金改定" class="{{ input_class }}">
-    </label>
-    <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">追加</button>
-  </form>
-  {% endcall %}
-</div>
-{% endblock %}
+{% block title %}設定 | Looop Smart Plug Controller{% endblock %}
 
 {% block content %}
 <h1 class="mb-4 text-2xl font-bold">設定</h1>
@@ -123,6 +40,10 @@
   </p>
   {% endif %}
   {% endcall %}
+</div>
+
+<div class="mt-4">
+  {% include "components/portable_powers.html" %}
 </div>
 
 <div class="mt-4">

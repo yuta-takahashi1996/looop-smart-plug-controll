@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## プロジェクトの現状
 
-Phase 7（運用改善、[docs/15-roadmap.md](docs/15-roadmap.md)）を実装中。
+Phase 7（運用改善、[docs/15-roadmap.md](docs/15-roadmap.md)）を実装中。Phase 8〜11 は実装済み。
 - 料金予報：`app/providers/looop.py` がでんき予報の `/api/prices` から電源料金単価を取得し、`app/services/forecast.py` が検証・保存する。でんき予報の区分（日和・注意報・警報）も `level` として保存する。請求単価は「電源料金単価＋`price_adjustments` の加算額」で都度算出し、表示にのみ使う（[docs/06-forecast-provider.md](docs/06-forecast-provider.md) §6.5）。
 - SwitchBot：`app/clients/switchbot.py`（状態取得・turnOn/turnOff。機器 ID は呼び出しごとに渡す）。`app/services/controller.py` の `PlugMonitor` は制御対象の機器ごとの状態の読み取りのみ。実機の確認は `scripts/switchbot_check.py`。
 - 定期ジョブ：`app/services/scheduler.py`（APScheduler）。`APP_ENV=test` では起動しない。
@@ -17,8 +17,8 @@ Phase 7（運用改善、[docs/15-roadmap.md](docs/15-roadmap.md)）を実装中
 - 充電モード（[docs/07-control-logic.md](docs/07-control-logic.md) §7.10）：Jackery の充電モード（高速充電／静かな充電、`cs`）を MQTT で変更する（`JackeryClient.set_charge_mode`、HTTP で再取得して照合）。MQTT 5 で接続し、接続後15秒待ってから送る（3.1.1 や接続直後の送信はエラーなく破棄されることがある。[docs/08-switchbot-api.md](docs/08-switchbot-api.md) §8.4）。`ControlService._sync_charge_mode` がスケジュールの開始・終了時に、スケジュールごとの設定（`charge_mode_start` / `charge_mode_end`：静かな充電／高速充電／変更しない）へ切り替える。でんき予報のスケジュールは設定画面の既定値、任意スケジュールはルールの値で作り、運転スケジュール画面で個別に変更できる。ダッシュボードから手動でも変更できる。超急速充電（`sfc`）は扱わない。Dry Run 中は送信しない。
 - 機器の登録（Phase 9、[docs/17-multi-device.md](docs/17-multi-device.md) §17.4・§17.5）：`app/models/device.py` の `device_types`（種別マスター。マイグレーションで初期登録、テストは `seed_device_types`）・`devices`（制御機器とポータブル電源）・`portable_power_settings`。初回起動時に `SWITCHBOT_DEVICE_ID`・`JACKERY_DEVICE_ID` から既存の1台を登録する（`migrate_legacy_devices`。以後この2つは使わない）。制御機器画面 `/devices`（`app/api/devices.py`）で SwitchBot の機器一覧から制御対象を選び、給電先のポータブル電源などを編集する。`control_logs.device_id` に操作した機器を記録する。
 - 複数機器の制御（Phase 10、[docs/17-multi-device.md](docs/17-multi-device.md) §17.6・§17.7）：スケジュール・ルールの対象機器は `schedule_devices`（機器ごとの実行状態・実行時間帯・実測値）・`schedule_rule_devices`。`control_schedules.executed_start_at` などは集約のプロパティ（列は削除済み）。でんき予報のスケジュールは設定の `forecast_schedule_devices`、任意スケジュールはルールの対象機器で作り（0台なら作らない、上限 `MAX_DEVICES_PER_SCHEDULE`）、開始前のものは `optimizer.update_schedule_devices` で個別に変更できる。`ControlService` は操作のたびに `bind_devices` で制御対象を読み直し、機器ごとの状態（`DeviceRuntime`）で判定する。送信と照合は機器ごとにスレッドで並行（最大5台）、記録は直列。給電先のポータブル電源ごとに `BatteryMonitor`（`battery_factory`。テストは共用の `battery`）を持ち、残量の下限ではその機器だけ RETURNED（スケジュールは継続、終了時に DONE）。推定節約額は機器の想定平均負荷で機器ごとに算出して合計する。テストは `tests/conftest.py` の `default_devices`（プラグ1台＋Jackery）・`register_plug` を使う。
-- Phase 11 まで：ポータブル電源の下限・容量・効率は設定画面の全体の値を使う（`portable_power_settings` は移行時の値を保存するだけ）。D-10（紐づく機器がすべて RETURNED になったら終了時の充電モードへ切り替える）も Phase 11。
-- 次の予定（Phase 11〜12、仕様確定・未実装）：複数のポータブル電源の画面での登録と給電先ごとの判定、FOSSiBOT F2400 の調査。仕様は [docs/17-multi-device.md](docs/17-multi-device.md) を正とする。
+- 複数のポータブル電源（Phase 11、[docs/17-multi-device.md](docs/17-multi-device.md) §17.8）：設定画面の「ポータブル電源」カード（`components/portable_powers.html`、`app/api/settings.py` の `/settings/portable-powers`）で追加・編集・削除（`active=false`）・紐づくプラグの変更を行い、充電モードの既定値もここで保存する（`/settings/charge-mode`）。残量の下限・容量・変換効率は `portable_power_settings` の値（`PowerSource.limits` → `safety.BatteryLimits`）で判定し、推定節約額は給電先の変換効率を使う（`optimizer.device_params`）。設定画面の全体の値は追加時の初期値と給電先が未設定の機器に使う。クライアントは `app/clients/portable_power.py` の Protocol（Jackery は `JackeryPortablePower`）で、`app.state.portable_power_clients`（メーカーごと）を `battery_factory` が使う。`bind_devices` は紐づくプラグがないものも含め登録済みのポータブル電源をすべて読み込む。取得した値は `portable_power_settings.last_*` にも残す。D-10：紐づく対象機器がすべて RETURNED になった給電先は、その時点で終了時の充電モードにする（`ControlService._switch_on_returned`）。
+- 次の予定（Phase 12、仕様確定・未実装）：FOSSiBOT F2400 の調査。仕様は [docs/17-multi-device.md](docs/17-multi-device.md) を正とする。
 - 運用：`app/services/maintenance.py` が日次集計（`daily_summaries`）・バックアップ（`data/backups/`）・古いデータの削除を行う。本番は Docker（`docker compose up -d --build`）で動かす。`.env` の `$` を含む値はシングルクォートで囲む。
 
 `docs/` 配下の各ファイルは単なる背景説明ではなく正式な仕様書なので、何かを組み立てる前に必ず読むこと。ディレクトリ構成・DBスキーマ・環境変数・制御ロジックまで詳細に定義されている。実装時は以下の構成に従い、新たな構成を考案しないこと。

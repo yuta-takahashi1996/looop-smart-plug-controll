@@ -24,11 +24,11 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.clients.jackery import ChargeMode, JackeryClient, JackeryCommandUnconfirmed, JackeryError
+from app.clients.portable_power import ChargeMode, PortablePowerClient, PortablePowerError, PortablePowerUnconfirmed
 from app.clients.switchbot import PlugStatus, SwitchBotClient, SwitchBotError
 from app.config import Settings
 from app.models import device as device_models
-from app.models.device import Device, DeviceState
+from app.models.device import Device, DeviceState, PortablePowerSettings
 from app.models.schedule import (
     ChargeModeOption,
     ControlLog,
@@ -159,15 +159,16 @@ class PlugMonitor:
 
 
 class BatteryMonitor:
-    """ポータブル電源（Jackery）1台の残量・消費電力の取得と充電モードの変更（docs/07 §7.7・§7.10）。
+    """ポータブル電源1台の残量・消費電力の取得と充電モードの変更（docs/07 §7.7・§7.10）。
 
-    取得はスケジュールの開始時と OFF 中の5分ごと（ControlService が呼び出す）。OFF の間の消費電力の
-    平均を予測に使うため、紐づく機器が OFF を始めたときに samples をリセットする。
+    メーカーごとのクライアント（app/clients/portable_power.py の形）を使う。取得はスケジュールの開始時と OFF 中の
+    5分ごと（ControlService が呼び出す）。OFF の間の消費電力の平均を予測に使うため、紐づく機器が OFF を始めたときに
+    samples をリセットする。取得した値は portable_power_settings の last_* にも残す（画面の表示用）。
     """
 
     def __init__(
         self,
-        client: JackeryClient | None,
+        client: PortablePowerClient | None,
         device_id: str | None,
         session_factory: Callable[[], Session],
         *,
@@ -178,13 +179,13 @@ class BatteryMonitor:
         # 取得するポータブル電源の機器 ID。空文字は共有されている1台（機器の登録前の動作）、None は未設定
         self._device_id = device_id
         self._session_factory = session_factory
-        self.owner_id = owner_id  # devices.id（イベントの関連付け用）
+        self.owner_id = owner_id  # devices.id（イベントの関連付け・last_* の保存先）
         self.name = name
         self._lock = threading.Lock()
         self.last: safety.BatteryReading | None = None
         self.last_error: str | None = None
         self.samples: list[float] = []
-        # 最後に確認した充電モード（cs が高速充電・静かな充電以外なら None）と確認時刻
+        # 最後に確認した充電モード（高速充電・静かな充電以外なら None）と確認時刻
         self.charge_mode: ChargeMode | None = None
         self.charge_mode_at: datetime | None = None
 
@@ -208,14 +209,14 @@ class BatteryMonitor:
     def read(self, now: datetime) -> safety.BatteryReading | None:
         """残量と消費電力を取得する。取得できなければ None（エラーはイベントとして記録する）。"""
         if not self.configured:
-            self.last_error = "Jackery のアカウントが未設定です"
+            self.last_error = "ポータブル電源のアカウントが未設定です"
             return None
         assert self._client is not None
         try:
-            status = self._client.get_status(self._resolve_device_id())
+            status = self._client.read(self._resolve_device_id())
             if status.remaining_percent is None or status.output_power_w is None:
-                raise JackeryError("残量または消費電力を取得できませんでした")
-        except (JackeryError, IndexError) as exc:
+                raise PortablePowerError("残量または消費電力を取得できませんでした")
+        except (PortablePowerError, IndexError) as exc:
             prefix = f"{self.name}：" if self.name else ""
             message = f"{prefix}ポータブル電源の状態を取得できませんでした：{exc}"
             previous, self.last_error = self.last_error, message
@@ -230,10 +231,27 @@ class BatteryMonitor:
             self.last, self.last_error = reading, None
             self.samples.append(status.output_power_w)
             self.charge_mode, self.charge_mode_at = status.charge_mode, now
+        self._save_last(status.remaining_percent, status.output_power_w, status.input_power_w, status.charge_mode, now)
         if had_error:
             with self._session_factory() as session:
                 resolve_events(session, EventCategory.BATTERY, device_id=self.owner_id)
         return reading
+
+    def _save_last(
+        self, percent: int, output_w: float, input_w: float | None, mode: ChargeMode | None, at: datetime
+    ) -> None:
+        if self.owner_id is None:
+            return
+        try:
+            with self._session_factory() as session:
+                row = session.get(PortablePowerSettings, self.owner_id)
+                if row is not None:
+                    row.last_percent, row.last_output_w, row.last_input_w = percent, output_w, input_w
+                    row.last_charge_mode = mode.value if mode else None
+                    row.last_read_at = at
+                    session.commit()
+        except Exception:
+            logger.exception("failed to save portable power reading")
 
     def _resolve_device_id(self) -> str:
         assert self._client is not None and self._device_id is not None
@@ -241,13 +259,13 @@ class BatteryMonitor:
             return self._device_id
         devices = self._client.list_devices()
         if not devices:
-            raise JackeryError("共有されたポータブル電源が見つかりません")
-        return str(devices[0].get("devId"))
+            raise PortablePowerError("共有されたポータブル電源が見つかりません")
+        return devices[0].external_id
 
     def set_charge_mode(self, mode: ChargeMode, now: datetime) -> None:
-        """充電モードを変更する（照合できなければ JackeryError）。呼び出しは ControlService から。"""
+        """充電モードを変更する（照合できなければ PortablePowerError）。呼び出しは ControlService から。"""
         if not self.configured:
-            raise JackeryError("Jackery のアカウントが未設定です")
+            raise PortablePowerError("ポータブル電源のアカウントが未設定です")
         assert self._client is not None
         status = self._client.set_charge_mode(self._resolve_device_id(), mode)
         with self._lock:
@@ -273,6 +291,7 @@ class PowerSource:
     id: int
     name: str
     monitor: BatteryMonitor
+    limits: safety.BatteryLimits  # 残量の下限・容量・変換効率（portable_power_settings）
     charge_mode_enabled: bool = True
 
 
@@ -378,6 +397,8 @@ class ControlService:
         self.charge_changes: dict[int, ChargeModeChange] = {}
         self.last_charge_change: ChargeModeChange | None = None
         self._charge_failed: dict[int, tuple[ChargeMode, datetime]] = {}
+        # 残量低下で紐づく機器がすべて ON に戻り、終了時のモードへ切り替えた (スケジュール, 給電先)（D-10）
+        self._charge_returned: set[tuple[int, int]] = set()
         self._load_persisted()
 
     # --- 状態 ---
@@ -411,12 +432,11 @@ class ControlService:
                 logger.info("controlling devices: %s", ", ".join(d.name for d in devices.values()) or "(none)")
             self._devices = devices
 
+            # 登録済みのポータブル電源はすべて扱う（紐づくプラグがなくても、画面で残量の取得・充電モードの変更ができる）
+            fallback = safety.BatteryLimits.from_control(load_control_settings(session, self._settings))
             sources: dict[int, PowerSource] = {}
-            for source_id in {d.power_source_id for d in devices.values() if d.power_source_id is not None}:
-                source = session.get(Device, source_id)
-                if source is None or not source.active:
-                    continue
-                current = self._sources.get(source_id)
+            for source in device_models.portable_powers(session):
+                current = self._sources.get(source.id)
                 monitor: BatteryMonitor | None
                 if self._shared_battery is not None:
                     monitor = self._shared_battery
@@ -429,8 +449,10 @@ class ControlService:
                     monitor = None
                 if monitor is None:
                     continue
-                enabled = source.portable_power.charge_mode_enabled if source.portable_power is not None else True
-                sources[source_id] = PowerSource(source_id, source.name, monitor, enabled)
+                pp = source.portable_power
+                limits = safety.BatteryLimits(pp.min_percent, pp.capacity_wh, pp.efficiency) if pp is not None else fallback
+                enabled = pp.charge_mode_enabled if pp is not None else True
+                sources[source.id] = PowerSource(source.id, source.name, monitor, limits, enabled)
             self._sources = sources
             self._loaded = True
 
@@ -448,6 +470,11 @@ class ControlService:
 
     def power_source(self, source_id: int | None) -> PowerSource | None:
         return self._sources.get(source_id) if source_id is not None else None
+
+    def _limits_for(self, device: DeviceRuntime, control: ControlSettings) -> safety.BatteryLimits:
+        """給電先のポータブル電源の下限・容量・効率（給電先がなければ全体の設定値）。"""
+        source = self.power_source(device.power_source_id)
+        return source.limits if source is not None else safety.BatteryLimits.from_control(control)
 
     def _monitor_for(self, device: DeviceRuntime) -> BatteryMonitor | None:
         source = self.power_source(device.power_source_id)
@@ -783,7 +810,9 @@ class ControlService:
         reading = self._battery_reading(monitor, now, force=starting)
         if monitor is not None and safety.battery_known(reading, now):
             assert reading is not None
-            decision = safety.check_battery(reading, now, control, average_output_w=monitor.average_output_w(), end_at=None)
+            decision = safety.check_battery(
+                reading, now, self._limits_for(device, control), average_output_w=monitor.average_output_w(), end_at=None
+            )
             if not decision.allowed and len(self._sources) > 1:
                 return safety.OffDecision(False, f"{self._source_name(device)}：{decision.reason}")
             return decision
@@ -821,7 +850,7 @@ class ControlService:
             sources = self.power_sources
             source = self._sources.get(source_id) if source_id is not None else (sources[0] if len(sources) == 1 else None)
             if source is None or not source.monitor.configured:
-                raise ValueError("Jackery のアカウントまたは給電先のポータブル電源が未設定のため、充電モードを変更できません")
+                raise ValueError("ポータブル電源のアカウントが未設定、またはポータブル電源が登録されていないため、充電モードを変更できません")
             self._charge_failed.pop(source.id, None)  # 手動の変更を優先し、失敗した自動変更は再試行しない
             return self._change_charge_mode(session, source, mode, ControlSource.MANUAL, f"手動操作（{mode.label}）", local_now)
 
@@ -844,8 +873,9 @@ class ControlService:
         実行中（RUNNING）になったスケジュールは開始時、実行中でなくなった（終了・中断）スケジュールは終了時の
         モードを設定する。同じサイクルで終了と開始が重なる場合（連続するスケジュール）は、開始するスケジュールの
         設定を優先し、「変更しない」の設定は無視する（送信は1回のみ。すでにそのモードなら送らない）。
-        送り先は、そのスケジュールの対象機器の給電先。充電モードは電源の供給に影響しないため、失敗してもプラグの
-        制御は止めない。
+        送り先は、そのスケジュールの対象機器の給電先。実行中でも、給電先に紐づく対象機器が残量低下ですべて ON に
+        戻ったら、その給電先だけ終了時のモードにする（docs/17 §17.8.3 の D-10）。充電モードは電源の供給に影響しない
+        ため、失敗してもプラグの制御は止めない。
         """
         try:
             running = {
@@ -857,39 +887,87 @@ class ControlService:
             ended = self._charge_running - running.keys()
             started = running.keys() - self._charge_running
             if ended or started or self._charge_legacy_active:
-                modes: list[tuple[ChargeModeOption, str]] = []
-                targets = self._charge_targets(session, ended | started)
-                if self._charge_legacy_active and not running:
-                    # 旧形式で実行中として記録していた（このサイクルまでに終了した）スケジュール
-                    end_mode = load_control_settings(session, self._settings).charge_mode_end
-                    modes.append((end_mode, "スケジュール終了"))
-                    targets = [s for s in self.power_sources if s.charge_mode_enabled]
-                for schedule_id in sorted(ended):
-                    schedule = session.get(ControlSchedule, schedule_id)
-                    if schedule is not None:
-                        modes.append((schedule.charge_mode_end, "スケジュール終了"))
-                for schedule in sorted((running[i] for i in started), key=lambda s: s.start_at):
-                    modes.append((schedule.charge_mode_start, "スケジュール開始"))
-                self._charge_running = set(running)
-                self._charge_legacy_active = False
-                set_value(session, CHARGE_MODE_RUNNING_KEY, ",".join(map(str, sorted(running))))
-                target = next(((m, r) for m, r in reversed(modes) if m != ChargeModeOption.KEEP), None)
-                if target is None:
-                    return
-                mode = ChargeMode(target[0].value)
-                for source in targets:
-                    if ended and started and mode == self.charge_mode_for(source.id):
-                        continue  # 連続するスケジュールの間で、すでに同じモード
-                    self._charge_failed.pop(source.id, None)
-                    if source.monitor.configured:
-                        self._change_charge_mode(session, source, mode, ControlSource.AUTO, target[1], now)
-                return
-            for source_id, (mode, at) in list(self._charge_failed.items()):
-                source = self._sources.get(source_id)
-                if source is not None and now - at >= RETRY_AFTER:
-                    self._change_charge_mode(session, source, mode, ControlSource.AUTO, f"充電モード（{mode.label}）の再試行", now)
+                self._switch_on_boundary(session, running, ended, started, now)
+            else:
+                for source_id, (mode, at) in list(self._charge_failed.items()):
+                    source = self._sources.get(source_id)
+                    if source is not None and now - at >= RETRY_AFTER:
+                        self._change_charge_mode(session, source, mode, ControlSource.AUTO, f"充電モード（{mode.label}）の再試行", now)
+            self._switch_on_returned(session, running, now)
         except Exception:
             logger.exception("failed to sync charge mode")
+
+    def _switch_on_boundary(
+        self, session: Session, running: dict[int, ControlSchedule], ended: set[int], started: set[int], now: datetime
+    ) -> None:
+        """スケジュールの開始・終了による切り替え。"""
+        modes: list[tuple[ChargeModeOption, str]] = []
+        targets = self._charge_targets(session, ended | started)
+        if self._charge_legacy_active and not running:
+            # 旧形式で実行中として記録していた（このサイクルまでに終了した）スケジュール
+            end_mode = load_control_settings(session, self._settings).charge_mode_end
+            modes.append((end_mode, "スケジュール終了"))
+            targets = [s for s in self.power_sources if s.charge_mode_enabled]
+        for schedule_id in sorted(ended):
+            schedule = session.get(ControlSchedule, schedule_id)
+            if schedule is not None:
+                modes.append((schedule.charge_mode_end, "スケジュール終了"))
+        for schedule in sorted((running[i] for i in started), key=lambda s: s.start_at):
+            modes.append((schedule.charge_mode_start, "スケジュール開始"))
+        self._charge_running = set(running)
+        self._charge_legacy_active = False
+        set_value(session, CHARGE_MODE_RUNNING_KEY, ",".join(map(str, sorted(running))))
+        target = next(((m, r) for m, r in reversed(modes) if m != ChargeModeOption.KEEP), None)
+        # 終了時のモードへ切り替え済み（D-10）の給電先と、開始時点で紐づく機器がすべて ON に戻っている給電先には送らない
+        already_ended = {source_id for schedule_id, source_id in self._charge_returned if schedule_id in ended}
+        returned_at_start = {sid for i in started for sid in self._returned_sources(running[i])}
+        self._charge_returned = {(i, sid) for i, sid in self._charge_returned if i in running}
+        if target is None:
+            return
+        mode = ChargeMode(target[0].value)
+        for source in targets:
+            if ended and started and mode == self.charge_mode_for(source.id):
+                continue  # 連続するスケジュールの間で、すでに同じモード
+            if not started and source.id in already_ended:
+                continue
+            if started and source.id in returned_at_start:
+                continue  # 続く _switch_on_returned で終了時のモードにする
+            self._charge_failed.pop(source.id, None)
+            if source.monitor.configured:
+                self._change_charge_mode(session, source, mode, ControlSource.AUTO, target[1], now)
+
+    def _returned_sources(self, schedule: ControlSchedule) -> set[int]:
+        """紐づく対象機器が残量低下ですべて ON に戻った（RETURNED を含み、実行中・開始前がない）給電先。"""
+        statuses: dict[int, list[ScheduleDeviceStatus]] = {}
+        for sd in schedule.devices:
+            device = self._devices.get(sd.device_id)
+            if device is not None and device.power_source_id is not None:
+                statuses.setdefault(device.power_source_id, []).append(sd.status)
+        return {
+            source_id
+            for source_id, values in statuses.items()
+            if ScheduleDeviceStatus.RETURNED in values and all(v not in _ACTIVE_DEVICE_STATUSES for v in values)
+        }
+
+    def _switch_on_returned(self, session: Session, running: dict[int, ControlSchedule], now: datetime) -> None:
+        """D-10：実行中のスケジュールで、紐づく対象機器がすべて ON に戻った給電先を終了時のモードにする（1回だけ）。"""
+        for schedule in sorted(running.values(), key=lambda s: s.start_at):
+            if schedule.target_state == PlugState.ON:
+                continue
+            for source_id in sorted(self._returned_sources(schedule)):
+                key = (schedule.id, source_id)
+                if key in self._charge_returned:
+                    continue
+                self._charge_returned.add(key)
+                source = self._sources.get(source_id)
+                if schedule.charge_mode_end == ChargeModeOption.KEEP or source is None or not source.charge_mode_enabled:
+                    continue
+                mode = ChargeMode(schedule.charge_mode_end.value)
+                if mode == self.charge_mode_for(source_id) or not source.monitor.configured:
+                    continue
+                self._charge_failed.pop(source_id, None)
+                reason = "残量低下で紐づく機器をすべて ON に戻したため"
+                self._change_charge_mode(session, source, mode, ControlSource.AUTO, reason, now)
 
     def _change_charge_mode(
         self, session: Session, source: PowerSource, mode: ChargeMode, origin: ControlSource, reason: str, now: datetime
@@ -904,9 +982,9 @@ class ControlService:
             try:
                 source.monitor.set_charge_mode(mode, now)
                 result = ControlResult.SUCCESS
-            except JackeryCommandUnconfirmed as exc:
+            except PortablePowerUnconfirmed as exc:
                 result, error = ControlResult.UNCONFIRMED, str(exc)
-            except JackeryError as exc:
+            except PortablePowerError as exc:
                 result, error = ControlResult.FAILED, str(exc)
 
         change = ChargeModeChange(mode, origin, reason, result, now, error)
@@ -1088,7 +1166,7 @@ class ControlService:
         if decision.allowed and known:
             assert reading is not None and monitor is not None
             battery_decision = safety.check_battery(
-                reading, now, control, average_output_w=monitor.average_output_w(), end_at=schedule.end_at
+                reading, now, self._limits_for(device, control), average_output_w=monitor.average_output_w(), end_at=schedule.end_at
             )
         if decision.allowed and (battery_decision is None or battery_decision.allowed):
             if sd.status == ScheduleDeviceStatus.PENDING:

@@ -1,0 +1,147 @@
+{# 設定画面の「ポータブル電源」（docs/17-multi-device.md §17.8.2）。ブロックごとに別のフォームで保存する #}
+{% set input_class = "mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 tabular-nums focus:border-sky-500 focus:outline-none" %}
+{% call card("ポータブル電源", id="portable-powers") %}
+<p class="text-xs text-slate-500">
+  プラグを OFF にしたときに家電へ給電するポータブル電源です。残量が下限を下回る前（次の取得時の予測を含む）に、紐づくプラグだけを ON に戻します。
+  紐づくプラグがないポータブル電源も、ダッシュボードで残量の確認と充電モードの変更ができます。
+</p>
+
+<form method="post" action="{{ url_for('save_charge_mode_defaults') }}" class="mt-4 rounded-lg border border-slate-800 p-3">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+  <div class="text-sm font-medium">充電モードの既定値（でんき予報のスケジュール）</div>
+  <div class="mt-2 flex flex-wrap items-end gap-3">
+    {% for key, label in charge_mode_fields %}
+    <label class="block text-sm">
+      <span class="text-slate-400">{{ label }}</span>
+      <select name="{{ key }}" class="{{ input_class }}">
+        {% for value, choice in charge_mode_choices %}
+        <option value="{{ value }}" {{ "selected" if charge_mode_values.get(key) == value }}>{{ choice }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endfor %}
+    <button type="submit" class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">保存</button>
+  </div>
+  <p class="mt-2 text-xs text-slate-500">
+    スケジュールの開始時・終了時に、対象機器の給電先のポータブル電源をこの設定にします（給電先がすべて同じ設定）。スケジュールごとの変更は運転スケジュール画面で、任意スケジュールはルールごとに設定します。
+    残量の下限で紐づくプラグがすべて ON に戻ったときは、そのポータブル電源だけ終了時の設定にします。保存すると、手動で変更していない開始前のスケジュールにも反映します。
+  </p>
+</form>
+
+<div class="mt-4 space-y-4">
+  {% for row in portable_power_rows %}
+  {% set d = row.device %}
+  {% set pp = row.settings %}
+  <div class="rounded-lg border border-slate-700">
+    <div class="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-2">
+      <span class="font-semibold">{{ d.name }}</span>
+      <form method="post" action="{{ url_for('delete_portable_power', device_id=d.id) }}"
+            data-confirm="「{{ d.name }}」を削除しますか？{% if row.delete_confirm %}&#10;{{ row.delete_confirm }}{% endif %}" onsubmit="return confirm(this.dataset.confirm)">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+        <button type="submit" class="text-xs text-rose-300 hover:underline">削除</button>
+      </form>
+    </div>
+    <form method="post" action="{{ url_for('edit_portable_power', device_id=d.id) }}" class="grid gap-3 p-3 sm:grid-cols-3" data-portable-power="{{ d.id }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">
+      <label class="block text-sm sm:col-span-2">
+        <span class="text-slate-400">名前</span>
+        <input name="name" required maxlength="50" value="{{ d.name }}" class="{{ input_class }}">
+      </label>
+      <div class="text-sm">
+        <span class="text-slate-400">機器</span>
+        <div class="mt-2">{{ d.device_type.name }}<span class="ml-1 text-xs text-slate-500">（ID: …{{ d.external_id[-4:] }}）</span></div>
+      </div>
+      <label class="block text-sm">
+        <span class="text-slate-400">容量（Wh）</span>
+        <input name="capacity_wh" type="number" min="1" step="1" required value="{{ '%g'|format(pp.capacity_wh) }}" class="{{ input_class }}">
+      </label>
+      <label class="block text-sm">
+        <span class="text-slate-400">残量の下限（%）</span>
+        <input name="min_percent" type="number" min="0" max="100" step="1" required value="{{ pp.min_percent }}" class="{{ input_class }}">
+      </label>
+      <label class="block text-sm">
+        <span class="text-slate-400">変換効率（%）</span>
+        <input name="efficiency_percent" type="number" min="1" max="100" step="1" required value="{{ '%g'|format(pp.efficiency * 100) }}" class="{{ input_class }}">
+      </label>
+      <div class="text-sm sm:col-span-3">
+        {% if d.device_type.charge_mode %}
+        <label class="inline-flex items-center gap-2">
+          <input type="checkbox" name="charge_mode_enabled" {{ "checked" if pp.charge_mode_enabled }} class="h-4 w-4 accent-sky-500">
+          充電モードをスケジュールに合わせて切り替える
+        </label>
+        {% else %}
+        <span class="text-xs text-slate-500">この種別は充電モードの変更に対応していません。</span>
+        {% endif %}
+      </div>
+      <div class="text-sm sm:col-span-3">
+        <span class="text-slate-400">紐づくプラグ</span>
+        <div class="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          {% for s in portable_power_switches %}
+          {% set other = s.power_source if s.power_source_id and s.power_source_id != d.id else none %}
+          <label class="inline-flex items-center gap-1.5">
+            <input type="checkbox" name="linked_ids" value="{{ s.id }}" {{ "checked" if s.power_source_id == d.id }}
+                   {% if other %}data-move-from="{{ other.name }}" data-switch-name="{{ s.name }}"{% endif %} class="accent-sky-500">
+            {{ s.name }}{% if other %}<span class="text-xs text-slate-500">（現在：{{ other.name }}）</span>{% endif %}
+          </label>
+          {% else %}
+          <span class="text-xs text-slate-500">制御対象の機器がありません（<a href="{{ url_for('devices') }}" class="underline">制御機器画面</a>で追加してください）</span>
+          {% endfor %}
+        </div>
+      </div>
+      <label class="block text-sm sm:col-span-3">
+        <span class="text-slate-400">説明（任意）</span>
+        <input name="note" maxlength="200" value="{{ d.note or '' }}" class="{{ input_class }}">
+      </label>
+      <div class="space-y-0.5 text-xs sm:col-span-3">
+        {% if pp.last_read_at %}
+        <p class="text-slate-400">最終取得：{{ pp.last_read_at|local("%m/%d %H:%M") }}・残量 {{ pp.last_percent }}%・出力 {{ "%.0f"|format(pp.last_output_w or 0) }}W</p>
+        {% endif %}
+        {% set h = row.hints %}
+        {% if h.average_power_w is not none %}
+        <p class="text-sky-300">
+          直近{{ h.days }}日の実測：平均消費電力 {{ "%.0f"|format(h.average_power_w) }}W（{{ h.count }}回の OFF）{% if h.efficiency_percent is not none %}・推定効率 {{ h.efficiency_percent }}%（放電のみ。充電の損失を含めるとこれより低くなります）{% endif %}
+        </p>
+        {% endif %}
+      </div>
+      <div class="flex items-center justify-between gap-3 sm:col-span-3">
+        <span class="text-xs text-slate-500">紐づくプラグを変更できるのは、そのプラグを対象に含むスケジュールの実行中以外です。</span>
+        <button type="submit" class="shrink-0 rounded-md bg-sky-600 px-4 py-2 text-sm font-medium hover:bg-sky-500">保存</button>
+      </div>
+    </form>
+  </div>
+  {% else %}
+  <p class="text-sm text-slate-500">登録済みのポータブル電源はありません。</p>
+  {% endfor %}
+</div>
+
+<div class="mt-4 rounded-lg border border-dashed border-slate-700 p-3">
+  {% if portable_power_vendors %}
+  <form hx-get="{{ url_for('new_portable_power') }}" hx-target="#portable-power-new" hx-swap="innerHTML" class="flex flex-wrap items-end gap-3">
+    <label class="block text-sm">
+      <span class="text-slate-400">メーカー</span>
+      <select name="vendor" class="{{ input_class }}">
+        {% for v in portable_power_vendors %}<option value="{{ v.value }}">{{ v.label }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="rounded-md border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800">＋ ポータブル電源を追加</button>
+    <span class="htmx-indicator text-xs text-slate-400">機器の一覧を取得中…</span>
+  </form>
+  <div id="portable-power-new" class="mt-3"></div>
+  {% else %}
+  <p class="text-sm text-slate-500">ポータブル電源を追加するには、メーカーのアカウントを環境変数で設定してください（Jackery は <code>JACKERY_ACCOUNT</code> / <code>JACKERY_PASSWORD</code>）。</p>
+  {% endif %}
+</div>
+{% endcall %}
+
+<script>
+// すでに別のポータブル電源に紐づいているプラグを選んだ場合は、紐づけ先を移す確認を表示する（docs/17 §17.8.2）
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!form.matches("[data-portable-power]")) return;
+  const moving = [...form.querySelectorAll("input[data-move-from]:checked")]
+    .map((input) => `${input.dataset.switchName}（現在：${input.dataset.moveFrom}）`);
+  if (moving.length && !confirm(`次のプラグの紐づけ先をこのポータブル電源に移します。\n\n${moving.join("\n")}\n\nよろしいですか？`)) {
+    event.preventDefault();
+  }
+});
+</script>

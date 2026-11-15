@@ -770,8 +770,8 @@ def test_measured_values_are_recorded_per_schedule(session: Session) -> None:
 class ChargeBattery(FakeBattery):
     """充電モードの変更を記録する模擬。fail に例外を入れると変更に失敗する。"""
 
-    def __init__(self) -> None:
-        super().__init__([(100, 100.0)])
+    def __init__(self, readings: list[tuple[int, float] | None] | None = None) -> None:
+        super().__init__(readings or [(100, 100.0)])
         self.modes: list[ChargeMode] = []
         self.fail: JackeryError | None = None
 
@@ -972,7 +972,7 @@ def test_manual_charge_mode(session: Session) -> None:
 def test_manual_charge_mode_requires_jackery(session: Session) -> None:
     control = ControlService(get_settings(), SessionLocal)
 
-    with pytest.raises(ValueError, match="Jackery"):
+    with pytest.raises(ValueError, match="アカウントが未設定"):
         control.manual_charge_mode(ChargeMode.SILENT)
 
 
@@ -1170,3 +1170,67 @@ def test_charge_mode_is_sent_to_power_sources_of_target_devices(session: Session
     control.run_cycle(_at(11))
 
     assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]  # 給電先（1台）にだけ送る
+
+
+# --- 残量低下で紐づく機器がすべて ON に戻ったときの充電モード（docs/17 §17.8.3 の D-10） ---
+
+
+def test_charge_mode_switches_to_end_mode_when_linked_devices_returned(session: Session) -> None:
+    _second_plug(session, battery=False)  # 給電先なし（D-10 の判定の対象外）
+    battery = ChargeBattery([(50, 150.0), (6, 150.0)])
+    plug = MultiPlug()
+    control = _multi_control(plug, battery)
+    _prepare(session, {range(20, 24): A})  # 10:00〜12:00
+
+    control.run_cycle(_at(10))  # 開始：静かな充電
+    control.run_cycle(_at(10, 5))  # 6%：紐づく PLUG1 を ON に戻す → 給電先を終了時の設定（高速充電）へ
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+    assert plug.power == {"PLUG1": "ON", "PLUG2": "OFF"}  # スケジュールは続ける
+    assert "残量低下で紐づく機器をすべて ON に戻したため" in _charge_events(session)[-1]
+
+    control.run_cycle(_at(10, 30))
+    control.run_cycle(_at(12))  # 終了時は切り替え済みのため送らない
+    assert battery.modes == [ChargeMode.SILENT, ChargeMode.FAST]
+
+
+def test_charge_mode_is_not_switched_while_some_linked_devices_are_off(session: Session) -> None:
+    _second_plug(session, battery=True)  # 同じ Jackery に紐づく2台目
+    battery = ChargeBattery()
+    control = _multi_control(MultiPlug(), battery)
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))
+    s = _schedules(session)[0]
+    # 1台だけ RETURNED になっても、紐づく他の機器が OFF 中なら切り替えない
+    s.devices[0].status = ScheduleDeviceStatus.RETURNED
+    session.commit()
+    control.run_cycle(_at(10, 1))
+    assert battery.modes == [ChargeMode.SILENT]
+
+
+def test_returned_at_start_does_not_send_start_mode(session: Session) -> None:
+    battery = ChargeBattery([(6, 300.0)])
+    control = _real_control(FakePlug("ON"), battery)
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))  # 開始時から下限を下回る見込み：静かな充電にせず、終了時の設定にする
+
+    assert battery.modes == [ChargeMode.FAST]
+    control.run_cycle(_at(12))
+    assert battery.modes == [ChargeMode.FAST]
+
+
+def test_battery_limits_come_from_portable_power_settings(session: Session) -> None:
+    """残量の下限はポータブル電源ごとの設定（portable_power_settings）を使う（docs/17 §17.7.3）。"""
+    pp = device_models.portable_powers(session)[0].portable_power
+    pp.min_percent = 60
+    session.commit()
+    plug = FakePlug("ON")
+    control = _real_control(plug, FakeBattery([(50, 100.0)]))  # 全体の下限（5%）なら OFF にできる残量
+    _prepare(session, {range(20, 24): A})
+
+    control.run_cycle(_at(10))
+
+    assert plug.commands == []
+    row = _schedules(session)[0].devices[0]
+    assert row.status == ScheduleDeviceStatus.RETURNED and "下限（60%）" in row.status_reason

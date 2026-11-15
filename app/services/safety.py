@@ -76,20 +76,34 @@ def battery_known(reading: BatteryReading | None, now: datetime) -> bool:
     return reading is not None and now - reading.at <= BATTERY_STALE_AFTER
 
 
-def drain_percent_per_hour(power_w: float, control: ControlSettings) -> float:
+@dataclass(frozen=True)
+class BatteryLimits:
+    """ポータブル電源ごとの判定の設定（portable_power_settings。docs/17 §17.4.4）。"""
+
+    min_percent: int  # 残量の下限（%）
+    capacity_wh: float  # 容量（Wh）
+    efficiency: float  # 変換効率（0〜1）
+
+    @classmethod
+    def from_control(cls, control: ControlSettings) -> "BatteryLimits":
+        """全体の設定値（設定がないポータブル電源の代わりに使う）。"""
+        return cls(control.battery_min_percent, control.battery_capacity_wh, control.round_trip_efficiency)
+
+
+def drain_percent_per_hour(power_w: float, limits: BatteryLimits) -> float:
     # 出力（家電の消費電力）より、変換ロスの分だけ多く電池から減る。効率は節約額の計算と共用（安全側に低めになる）
-    return power_w / control.round_trip_efficiency / control.battery_capacity_wh * 100
+    return power_w / limits.efficiency / limits.capacity_wh * 100
 
 
-def projected_percent(reading: BatteryReading, power_w: float, until: datetime, control: ControlSettings) -> float:
+def projected_percent(reading: BatteryReading, power_w: float, until: datetime, limits: BatteryLimits) -> float:
     hours = max(0.0, (until - reading.at).total_seconds() / 3600)
-    return reading.percent - drain_percent_per_hour(power_w, control) * hours
+    return reading.percent - drain_percent_per_hour(power_w, limits) * hours
 
 
 def check_battery(
     reading: BatteryReading,
     now: datetime,
-    control: ControlSettings,
+    limits: BatteryLimits,
     *,
     average_output_w: float | None,
     end_at: datetime | None,
@@ -98,25 +112,25 @@ def check_battery(
 
     消費電力は今回値と OFF 中の平均の大きい方を使い、予測を安全側に寄せる。
     """
-    if reading.percent <= control.battery_min_percent:
-        return OffDecision(False, f"ポータブル電源の残量（{reading.percent}%）が下限（{control.battery_min_percent}%）以下です")
+    if reading.percent <= limits.min_percent:
+        return OffDecision(False, f"ポータブル電源の残量（{reading.percent}%）が下限（{limits.min_percent}%）以下です")
     power = max(reading.output_w, average_output_w or 0.0)
     horizon = now + BATTERY_CHECK_INTERVAL
     if end_at is not None:
         horizon = min(horizon, end_at)
-    projected = projected_percent(reading, power, horizon, control)
-    if projected < control.battery_min_percent:
+    projected = projected_percent(reading, power, horizon, limits)
+    if projected < limits.min_percent:
         return OffDecision(
             False,
             f"消費電力 {power:.0f}W が続くと {horizon:%H:%M} に残量が {projected:.1f}% になり、"
-            f"下限（{control.battery_min_percent}%）を下回るため",
+            f"下限（{limits.min_percent}%）を下回るため",
         )
     return OffDecision(True)
 
 
-def time_to_min_percent(reading: BatteryReading, power_w: float, control: ControlSettings) -> datetime | None:
+def time_to_min_percent(reading: BatteryReading, power_w: float, limits: BatteryLimits) -> datetime | None:
     """このままの消費電力で下限に達する見込み時刻（画面表示用）。"""
-    drain = drain_percent_per_hour(power_w, control)
+    drain = drain_percent_per_hour(power_w, limits)
     if drain <= 0:
         return None
-    return reading.at + timedelta(hours=(reading.percent - control.battery_min_percent) / drain)
+    return reading.at + timedelta(hours=(reading.percent - limits.min_percent) / drain)
