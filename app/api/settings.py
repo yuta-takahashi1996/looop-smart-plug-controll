@@ -53,21 +53,6 @@ GROUPS: list[tuple[str, str, list[tuple[str, str, str, dict[str, Any], str]]]] =
         ],
     ),
     (
-        "ポータブル電源の初期値",
-        "ポータブル電源を追加するときの初期値です。登録済みのポータブル電源は、下の「ポータブル電源」でそれぞれの値を設定します。",
-        [
-            ("battery_min_percent", "残量の下限", "%", {"type": "number", "min": 0, "max": 100, "step": 1}, ""),
-            ("battery_capacity_wh", "容量", "Wh", {"type": "number", "min": 1, "step": 1}, "種別の公称容量がない場合に使います。"),
-            (
-                "round_trip_efficiency",
-                "変換効率",
-                "%",
-                {"type": "number", "min": 1, "max": 100, "step": 1},
-                "給電先が未設定の機器の推定節約額と、ダッシュボードの蓄電池利用時の実効単価にも使います。",
-            ),
-        ],
-    ),
-    (
         "推定節約額",
         "画面に表示する推定節約額の計算に使います（制御の判断には使いません）。",
         [
@@ -100,13 +85,10 @@ def _to_form_values(data: ControlSettings) -> dict[str, str]:
         "operation_start": data.operation_start.strftime("%H:%M"),
         "operation_end": data.operation_end.strftime("%H:%M"),
         "off_all_day": "on" if data.off_all_day else "",
-        "round_trip_efficiency": f"{data.round_trip_efficiency * 100:g}",
         "max_continuous_off_minutes": str(data.max_continuous_off_minutes),
         "max_daily_off_minutes": str(data.max_daily_off_minutes),
         "min_switch_interval_minutes": str(data.min_switch_interval_minutes),
         "estimated_average_power_w": f"{data.estimated_average_power_w:g}",
-        "battery_min_percent": str(data.battery_min_percent),
-        "battery_capacity_wh": f"{data.battery_capacity_wh:g}",
         "charge_mode_start": data.charge_mode_start.value,
         "charge_mode_end": data.charge_mode_end.value,
     }
@@ -117,10 +99,6 @@ def _parse_form(form: dict[str, str]) -> ControlSettings:
     # チェックボックスは未チェックだと送信されない
     values["auto_enable"] = form.get("auto_enable") == "on"
     values["off_all_day"] = form.get("off_all_day") == "on"
-    try:
-        values["round_trip_efficiency"] = float(values["round_trip_efficiency"]) / 100  # 画面では％で入力する
-    except ValueError:
-        pass  # 数値でない場合は ControlSettings の検証でエラーにする
     return ControlSettings.model_validate(values)
 
 
@@ -165,7 +143,6 @@ def _render(
     forecast_device_ids: list[int] | None = None,
 ) -> HTMLResponse:
     settings = get_settings()
-    control = load_control_settings(session, settings)
     context: dict[str, Any] = {
         "switches": device_models.active_switches(session),
         "forecast_device_ids": (
@@ -178,9 +155,8 @@ def _render(
         "values": values,
         "saved": saved,
         "errors": errors or [],
-        "hints": maintenance.tuning_hints(
-            session, settings, control.battery_capacity_wh, datetime.now(ZoneInfo(settings.tz)).date()
-        ),
+        # 全体の目安は平均消費電力だけ（変換効率はポータブル電源ごとに容量を使って推定する）
+        "hints": maintenance.tuning_hints(session, settings, None, datetime.now(ZoneInfo(settings.tz)).date()),
     }
     context |= _portable_power_context(request, session, values)
     # HTMX からの送信ではフォーム部分のみ返す
@@ -481,11 +457,11 @@ def new_portable_power(request: Request, vendor: str = "", session: Session = De
             registered = {d.external_id for d in device_models.portable_powers(session) if d.device_type.vendor == vendor}
             context["candidates"] = [d for d in listed if d.external_id not in registered]
             device_type = device_models.portable_power_type(session, Vendor(vendor))
-            control = load_control_settings(session, get_settings())
+            settings = get_settings()
             context["defaults"] = {
-                "capacity_wh": f"{(device_type.default_capacity_wh if device_type else None) or control.battery_capacity_wh:g}",
-                "min_percent": str(control.battery_min_percent),
-                "efficiency_percent": f"{control.round_trip_efficiency * 100:g}",
+                "capacity_wh": f"{(device_type.default_capacity_wh if device_type else None) or settings.battery_capacity_wh:g}",
+                "min_percent": str(settings.battery_min_percent),
+                "efficiency_percent": f"{settings.round_trip_efficiency * 100:g}",
                 "charge_mode": bool(device_type and device_type.charge_mode),
             }
             context["switches"] = device_models.active_switches(session)
@@ -530,13 +506,13 @@ async def create_portable_power(request: Request, session: Session = Depends(get
         device.active = True
         device.sort_order = device_models.next_sort_order(session)
         if device.portable_power is None:
-            control = load_control_settings(session, get_settings())
+            settings = get_settings()
             session.add(
                 PortablePowerSettings(
                     device_id=device.id,
-                    capacity_wh=control.battery_capacity_wh,
-                    min_percent=control.battery_min_percent,
-                    efficiency=control.round_trip_efficiency,
+                    capacity_wh=device.device_type.default_capacity_wh or settings.battery_capacity_wh,
+                    min_percent=settings.battery_min_percent,
+                    efficiency=settings.round_trip_efficiency,
                 )
             )
             session.flush()

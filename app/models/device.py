@@ -20,7 +20,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.config import Settings
 from app.models.schedule import ControlLog, ControlSchedule, ScheduleDevice, ScheduleDeviceStatus, ScheduleRule
-from app.models.settings import get_value, load_control_settings, set_value
+from app.models.settings import get_value, set_value
 from app.repositories.database import Base, UTCDateTime
 
 
@@ -402,12 +402,11 @@ def register_portable_power(
     vendor: Vendor = Vendor.JACKERY,
     now: datetime | None = None,
 ) -> Device:
-    """ポータブル電源を登録し、現在の全体の設定値で portable_power_settings を作る（画面からの登録では入力値で上書きする）。"""
+    """ポータブル電源を登録し、環境変数の初期値（容量は種別の公称容量を優先）で portable_power_settings を作る（画面からの登録では入力値で上書きする）。"""
     now = now or _now()
     device_type = find_type(session, Vendor.JACKERY, JACKERY_1000_NEW) if vendor == Vendor.JACKERY else None
     device_type = device_type or portable_power_type(session, vendor)
     assert device_type is not None, "種別マスターが初期登録されていません（alembic upgrade head）"
-    control = load_control_settings(session, settings)
     device = Device(
         device_type_id=device_type.id,
         external_id=external_id,
@@ -422,9 +421,9 @@ def register_portable_power(
     session.add(
         PortablePowerSettings(
             device_id=device.id,
-            capacity_wh=control.battery_capacity_wh,
-            min_percent=control.battery_min_percent,
-            efficiency=control.round_trip_efficiency,
+            capacity_wh=device_type.default_capacity_wh or settings.battery_capacity_wh,
+            min_percent=settings.battery_min_percent,
+            efficiency=settings.round_trip_efficiency,
             charge_mode_enabled=True,
         )
     )

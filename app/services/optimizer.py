@@ -62,7 +62,8 @@ class PlanParams:
     off_all_day: bool = False  # 自動 OFF を終日許可する
 
     @classmethod
-    def from_settings(cls, control: ControlSettings) -> "PlanParams":
+    def from_settings(cls, control: ControlSettings, settings: Settings) -> "PlanParams":
+        """変換効率は環境変数の初期値（給電先のポータブル電源があれば device_params でその値に置き換える）。"""
         return cls(
             operation_start=control.operation_start,
             operation_end=control.operation_end,
@@ -70,7 +71,7 @@ class PlanParams:
             max_daily_slots=control.max_daily_off_minutes // SLOT_MINUTES,
             min_gap_slots=math.ceil(control.min_switch_interval_minutes / SLOT_MINUTES),
             auto_enable=control.auto_enable,
-            round_trip_efficiency=control.round_trip_efficiency,
+            round_trip_efficiency=settings.round_trip_efficiency,
             average_power_w=control.estimated_average_power_w,
             off_all_day=control.off_all_day,
         )
@@ -135,7 +136,7 @@ def saving_between(slots: list[PriceSlot], start_at: datetime, end_at: datetime,
 
 
 def device_params(params: PlanParams, device: Device | None) -> PlanParams:
-    """機器の想定平均負荷と給電先の変換効率（未設定なら全体の設定値）で計算するための値（docs/17 §17.7.5）。"""
+    """機器の想定平均負荷と給電先の変換効率（未設定なら環境変数の初期値）で計算するための値（docs/17 §17.7.5）。"""
     if device is None:
         return params
     if device.estimated_power_w is not None:
@@ -312,7 +313,7 @@ def regenerate(session: Session, settings: Settings, day: date, now: datetime | 
     now = now or datetime.now(tz)
     forecast = forecast_service.get_day_forecast(session, settings.looop_area, day, tz)
     control = load_control_settings(session, settings)
-    params = PlanParams.from_settings(control)
+    params = PlanParams.from_settings(control, settings)
 
     existing = schedules_for(session, day)
     kept = [s for s in existing if s.manually_modified or s.start_at <= now]
@@ -397,7 +398,7 @@ def _validate(
     now: datetime,
 ) -> list[str]:
     tz = ZoneInfo(settings.tz)
-    params = PlanParams.from_settings(load_control_settings(session, settings))
+    params = PlanParams.from_settings(load_control_settings(session, settings), settings)
     day_start = _day_start(schedule.schedule_date, tz)
     errors: list[str] = []
 
@@ -478,7 +479,7 @@ def update_schedule(
     if start_at is not None or end_at is not None:
         forecast = forecast_service.get_day_forecast(session, settings.looop_area, schedule.schedule_date, tz)
         if forecast.slots:
-            params = PlanParams.from_settings(load_control_settings(session, settings))
+            params = PlanParams.from_settings(load_control_settings(session, settings), settings)
             base = _day_start(schedule.schedule_date, tz)
             s, e = int((new_start - base) / SLOT), int((new_end - base) / SLOT)
             schedule.estimated_saving = devices_saving(forecast.slots, s, e, params, [d.device for d in schedule.devices])
@@ -523,7 +524,7 @@ def update_schedule_devices(
         forecast = forecast_service.get_day_forecast(session, settings.looop_area, schedule.schedule_date, tz)
         if forecast.slots:
             s, e = _slot_range(schedule, tz)
-            params = PlanParams.from_settings(load_control_settings(session, settings))
+            params = PlanParams.from_settings(load_control_settings(session, settings), settings)
             schedule.estimated_saving = devices_saving(forecast.slots, s, e, params, [session.get(Device, i) for i in ids])
     schedule.manually_modified = True
     schedule.updated_at = datetime.now(UTC)
@@ -683,7 +684,7 @@ def validate_rule(session: Session, settings: Settings, rule: ScheduleRule, now:
     """ルールの登録・変更時の検証（docs/07 §7.9）。rule は未保存の値でよい。"""
     tz = ZoneInfo(settings.tz)
     now = now or datetime.now(tz)
-    params = PlanParams.from_settings(load_control_settings(session, settings))
+    params = PlanParams.from_settings(load_control_settings(session, settings), settings)
     errors: list[str] = []
     if not rule.name.strip():
         errors.append("名前を入力してください")
@@ -753,7 +754,7 @@ def unexpanded_messages(session: Session, settings: Settings, rule: ScheduleRule
     """当日・翌日に適用されるのに、開始済み・手動変更済みのスケジュールと重なって展開しなかった日と時間帯。"""
     tz = ZoneInfo(settings.tz)
     now = now or datetime.now(tz)
-    min_gap = PlanParams.from_settings(load_control_settings(session, settings)).min_gap_slots * SLOT
+    min_gap = PlanParams.from_settings(load_control_settings(session, settings), settings).min_gap_slots * SLOT
     messages = []
     for day in (now.date(), now.date() + timedelta(days=1)):
         if not rule.applies_to(day):

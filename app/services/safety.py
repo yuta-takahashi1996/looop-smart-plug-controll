@@ -7,6 +7,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from app.config import Settings
 from app.models.schedule import ControlSchedule, ScheduleSource
 from app.models.settings import ControlSettings
 
@@ -85,9 +86,9 @@ class BatteryLimits:
     efficiency: float  # 変換効率（0〜1）
 
     @classmethod
-    def from_control(cls, control: ControlSettings) -> "BatteryLimits":
-        """全体の設定値（設定がないポータブル電源の代わりに使う）。"""
-        return cls(control.battery_min_percent, control.battery_capacity_wh, control.round_trip_efficiency)
+    def from_settings(cls, settings: Settings) -> "BatteryLimits":
+        """環境変数の初期値（給電先のポータブル電源がない場合の代わりに使う）。"""
+        return cls(settings.battery_min_percent, settings.battery_capacity_wh, settings.round_trip_efficiency)
 
 
 def drain_percent_per_hour(power_w: float, limits: BatteryLimits) -> float:

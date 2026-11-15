@@ -1138,7 +1138,7 @@ def test_saving_uses_estimated_power_of_each_device(session: Session, control: C
     schedules = _prepare(session, {range(34, 36): A})
 
     s = schedules[0]
-    params = optimizer.PlanParams.from_settings(load_control_settings(session, get_settings()))
+    params = optimizer.PlanParams.from_settings(load_control_settings(session, get_settings()), get_settings())
     forecast = forecast_service.get_day_forecast(session, "hokkaido", DAY, JST)
     single = optimizer.estimated_saving(forecast.slots, 34, 36, params)
     assert s.estimated_saving == pytest.approx(single * 3, abs=0.2)

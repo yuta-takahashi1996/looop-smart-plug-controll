@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.auth import verify_csrf
 from app.api.forecast import PriceView, chart_context, get_price_view, price_of
 from app.config import Settings, get_settings
+from app.models import device as device_models
 from app.models.schedule import ControlLog, ControlSchedule, PlugState, ScheduleStatus
 from app.models.settings import EventCategory, EventLevel, SystemEvent, load_control_settings, unresolved_events
 from app.providers.base import ForecastLevel
@@ -56,7 +57,9 @@ def _price_summary(session: Session, settings: Settings, now: datetime, view: Pr
         tomorrow = forecast_service.get_day_forecast(session, area, now.date() + timedelta(days=1), tz)
         next_slot = tomorrow.slots[0] if tomorrow.slots else None
     prices = [price_of(slot, view) for slot in today.slots]
-    efficiency = load_control_settings(session, settings).round_trip_efficiency
+    # 登録済みのポータブル電源のうち最も低い変換効率（高めに見積もる。未登録なら環境変数の初期値）
+    efficiencies = [d.portable_power.efficiency for d in device_models.portable_powers(session) if d.portable_power]
+    efficiency = min(efficiencies, default=settings.round_trip_efficiency)
     return PriceSummary(
         view=view,
         current=today.slots[index],
@@ -114,7 +117,7 @@ def _executed_saving(session: Session, settings: Settings, schedule: ControlSche
                     session, settings.looop_area, schedule.schedule_date, ZoneInfo(settings.tz)
                 )
             if forecast.slots:
-                params = optimizer.PlanParams.from_settings(load_control_settings(session, settings))
+                params = optimizer.PlanParams.from_settings(load_control_settings(session, settings), settings)
                 total += optimizer.saving_between(
                     forecast.slots, sd.executed_start_at, now, optimizer.device_params(params, sd.device)
                 )

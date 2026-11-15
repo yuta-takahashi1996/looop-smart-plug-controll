@@ -13,15 +13,12 @@ CONTROL = ControlSettings(
     auto_enable=False,
     operation_start=time(9),
     operation_end=time(18),
-    round_trip_efficiency=0.85,
     max_continuous_off_minutes=120,
     max_daily_off_minutes=180,
     min_switch_interval_minutes=30,
     estimated_average_power_w=150,
-        battery_min_percent=5,
-        battery_capacity_wh=1070,
 )
-LIMITS = safety.BatteryLimits.from_control(CONTROL)
+LIMITS = safety.BatteryLimits(min_percent=5, capacity_wh=1070, efficiency=0.85)
 
 
 def at(hour: int, minute: int = 0) -> datetime:

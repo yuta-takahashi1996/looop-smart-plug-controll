@@ -173,11 +173,12 @@ TUNING_MIN_DROP_PERCENT = 5  # 残量は整数％のため、減少が小さい�
 
 
 def tuning_hints(
-    session: Session, settings: Settings, capacity_wh: float, today: date, *, power_source_id: int | None = None
+    session: Session, settings: Settings, capacity_wh: float | None, today: date, *, power_source_id: int | None = None
 ) -> dict:
     """制御パラメータ調整の目安：直近の OFF の実測から、平均消費電力と変換効率を推定する。
 
     power_source_id を指定すると、そのポータブル電源から給電した OFF だけで推定する（設定画面のポータブル電源ごとの表示）。
+    変換効率は容量が分かる場合（ポータブル電源ごと）だけ推定する。capacity_wh が None なら平均消費電力だけを返す。
     """
     recent = list(
         session.scalars(
@@ -200,12 +201,13 @@ def tuning_hints(
     usable = [
         (s, h)
         for s, h in zip(schedules, hours)
-        if s.battery_start_percent is not None
+        if capacity_wh is not None
+        and s.battery_start_percent is not None
         and s.battery_end_percent is not None
         and s.battery_start_percent - s.battery_end_percent >= TUNING_MIN_DROP_PERCENT
     ]
     output_wh = sum(s.measured_power_w * h for s, h in usable)  # type: ignore[operator]
-    battery_wh = sum((s.battery_start_percent - s.battery_end_percent) / 100 * capacity_wh for s, _ in usable)  # type: ignore[operator]
+    battery_wh = sum((s.battery_start_percent - s.battery_end_percent) / 100 * capacity_wh for s, _ in usable if capacity_wh)  # type: ignore[operator]
     efficiency = round(min(output_wh / battery_wh, 1.0) * 100) if battery_wh else None
     return {
         "count": len(schedules),

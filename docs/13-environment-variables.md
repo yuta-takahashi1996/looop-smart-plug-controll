@@ -50,7 +50,7 @@ FOSSIBOT_MQTT_PORT=1883
 # Schedule
 # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
 AUTO_ENABLE=false
-# ポータブル電源の変換効率（推定節約額の計算と残量の予測に共用）
+# ポータブル電源の変換効率の初期値（推定節約額の計算と残量の予測に共用。追加後はポータブル電源ごとに変更する）
 ROUND_TRIP_EFFICIENCY=0.85
 
 MAX_CONTINUOUS_OFF_MINUTES=120
@@ -92,11 +92,11 @@ Web UI から変更した制御条件（自動 OFF を許可する時間帯、�
 
 ## スケジュール
 
-`AUTO_ENABLE`、自動 OFF を許可する時間帯（`OPERATION_START` / `OPERATION_END` / `OFF_ALL_DAY`。`OFF_ALL_DAY=true` なら時刻によらず許可する）、OFF時間の制限、往復効率、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。`ROUND_TRIP_EFFICIENCY` は推定節約額の算出（充電に必要な電力量）と残量の予測（電池からの減り方）に共用する。本来は放電だけの効率の方が高いが、共用することで残量の予測は安全側（早めに ON に戻す）になる。
+`AUTO_ENABLE`、自動 OFF を許可する時間帯（`OPERATION_START` / `OPERATION_END` / `OFF_ALL_DAY`。`OFF_ALL_DAY=true` なら時刻によらず許可する）、OFF時間の制限、想定平均負荷は設定画面からも変更でき、保存した値が環境変数より優先される。`ESTIMATED_AVERAGE_POWER_W` は推定節約額の算出にのみ使う。`ROUND_TRIP_EFFICIENCY` は推定節約額の算出（充電に必要な電力量）と残量の予測（電池からの減り方）に共用する。本来は放電だけの効率の方が高いが、共用することで残量の予測は安全側（早めに ON に戻す）になる。
 
 ## Jackery
 
-`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。複数台は同じアカウントに共有し、設定画面で機器一覧から選んで登録する。`JACKERY_DEVICE_ID` は移行時に既存の1台を登録するためだけに使い（`uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい）、`BATTERY_MIN_PERCENT`・`BATTERY_CAPACITY_WH`・`ROUND_TRIP_EFFICIENCY` はポータブル電源の設定の初期値として使う。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。`CHARGE_MODE_START` / `CHARGE_MODE_END` はでんき予報のスケジュールの開始・終了時に設定する充電モードの既定値で、設定画面からも変更できる（保存した値が優先）。任意スケジュールはルールごとに指定する。
+`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。複数台は同じアカウントに共有し、設定画面で機器一覧から選んで登録する。`JACKERY_DEVICE_ID` は移行時に既存の1台を登録するためだけに使い（`uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい）、`BATTERY_MIN_PERCENT`・`BATTERY_CAPACITY_WH`・`ROUND_TRIP_EFFICIENCY` はポータブル電源を追加するときの初期値として使う（設定画面では変更せず、追加後はポータブル電源ごとに設定する。`BATTERY_CAPACITY_WH` は種別の公称容量がない場合だけ使う）。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。`CHARGE_MODE_START` / `CHARGE_MODE_END` はでんき予報のスケジュールの開始・終了時に設定する充電モードの既定値で、設定画面からも変更できる（保存した値が優先）。任意スケジュールはルールごとに指定する。
 
 ## FOSSiBOT
 
