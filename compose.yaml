@@ -23,6 +23,9 @@ services:
       - ./data:/app/data
       - ./logs:/app/logs
 
+    depends_on:
+      - mqtt
+
     stop_grace_period: 30s
 
     healthcheck:
@@ -31,6 +34,28 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # FOSSiBOT のポータブル電源が接続する MQTT ブローカー（docs/17-multi-device.md §17.9.4）。
+  # アプリからは同じネットワークのサービス名 mqtt で接続する（FOSSIBOT_MQTT_HOST=mqtt）。
+  # 機器から届くよう 1883 を LAN に公開する（ルーターでポートを開放しないこと）
+  mqtt:
+    image: eclipse-mosquitto:2.0.20
+
+    container_name: looop-mqtt
+
+    restart: unless-stopped
+
+    ports:
+      - "1883:1883"
+
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
 
     logging:
       driver: json-file

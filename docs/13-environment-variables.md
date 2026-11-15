@@ -42,6 +42,11 @@ BATTERY_CAPACITY_WH=1070
 CHARGE_MODE_START=SILENT
 CHARGE_MODE_END=FAST
 
+# FOSSiBOT（自前の MQTT ブローカー経由。BrightEMS アプリの「ローカルMQTT Broker設定」でホストの LAN の IP を設定する）
+# Docker Compose では同梱の Mosquitto（サービス名 mqtt）。ローカルで起動する場合はブローカーのホストの IP にする
+FOSSIBOT_MQTT_HOST=mqtt
+FOSSIBOT_MQTT_PORT=1883
+
 # Schedule
 # でんき注意報のスケジュールを自動で有効にする（でんき警報は設定によらず有効）
 AUTO_ENABLE=false
@@ -91,7 +96,11 @@ Web UI から変更した制御条件（自動 OFF を許可する時間帯、�
 
 ## Jackery
 
-`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。複数台は同じアカウントに共有し、設定画面で機器一覧から選んで登録する。`JACKERY_DEVICE_ID` は移行時に既存の1台を登録するためだけに使い（`uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい）、`BATTERY_MIN_PERCENT`・`BATTERY_CAPACITY_WH`・`ROUND_TRIP_EFFICIENCY` はポータブル電源の設定の初期値として使う。FOSSiBOT の環境変数は調査の結果で追加する（docs/17 §17.9.4）。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。`CHARGE_MODE_START` / `CHARGE_MODE_END` はでんき予報のスケジュールの開始・終了時に設定する充電モードの既定値で、設定画面からも変更できる（保存した値が優先）。任意スケジュールはルールごとに指定する。
+`JACKERY_ACCOUNT` / `JACKERY_PASSWORD` には、本アカウントからポータブル電源を共有した**取得専用のアカウント**を設定する（同時ログインは1台までのため、本アカウントを設定するとスマホアプリがログアウトされる）。複数台は同じアカウントに共有し、設定画面で機器一覧から選んで登録する。`JACKERY_DEVICE_ID` は移行時に既存の1台を登録するためだけに使い（`uv run python scripts/jackery_check.py devices` で確認でき、共有した機器が1台なら空欄でよい）、`BATTERY_MIN_PERCENT`・`BATTERY_CAPACITY_WH`・`ROUND_TRIP_EFFICIENCY` はポータブル電源の設定の初期値として使う。未設定の場合、残量は「不明」として扱う（docs/07-control-logic.md §7.7）。充電モードの変更（docs/07-control-logic.md §7.10）にも同じアカウントを使うため、共有は操作可能な権限で行う。未設定の場合は充電モードを変更しない。`CHARGE_MODE_START` / `CHARGE_MODE_END` はでんき予報のスケジュールの開始・終了時に設定する充電モードの既定値で、設定画面からも変更できる（保存した値が優先）。任意スケジュールはルールごとに指定する。
+
+## FOSSiBOT
+
+`FOSSIBOT_MQTT_HOST` / `FOSSIBOT_MQTT_PORT` は、FOSSiBOT のポータブル電源が接続する MQTT ブローカー（docs/17 §17.9.4）。Docker Compose では同梱の Mosquitto のサービス名 `mqtt` を設定する（`.env.example` の初期値）。ローカルで起動する場合は、ブローカーを動かしているホストの IP アドレスにする。未設定の場合、FOSSiBOT は設定画面のメーカーの選択肢に出さず、登録済みの FOSSiBOT の残量は「不明」として扱う。アカウント・API トークンは使わない。
 
 ## `$` を含む値
 

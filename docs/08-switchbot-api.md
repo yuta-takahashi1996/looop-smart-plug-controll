@@ -107,4 +107,18 @@ Jackery は公式 API を公開していないため、Jackery アプリが利�
 
 ## 8.5 ポータブル電源（FOSSiBOT F2400）
 
-FOSSiBOT（BrightEMS アプリ、メーカーは SYDPOWER）は公式 API を公開していない。非公式の方式（クラウド API、または自前の MQTT ブローカー）で残量の取得と AC 静音充電の切り替えができるかを調査し、採用の条件を満たした場合のみ実装する（docs/17-multi-device.md §17.9）。充電モードは、静かな充電＝AC 静音充電 ON、高速充電＝AC 静音充電 OFF として扱う。エンドポイント・認証・環境変数は調査の結果で本節に追記する。
+FOSSiBOT（BrightEMS アプリ、メーカーは SYDPOWER）の残量の取得と AC 静音充電の切り替えは、**自前の MQTT ブローカー**（Compose の Mosquitto）経由で行う（`app/clients/fossibot.py`。詳細は docs/17-multi-device.md §17.9.4、調査の経緯は [fossibot-research.md](fossibot-research.md)）。クラウド API はメーカーが遮断しているため使わない。
+
+| 項目 | 値 |
+|---|---|
+| ブローカー | `FOSSIBOT_MQTT_HOST:FOSSIBOT_MQTT_PORT`（Compose では `mqtt:1883`。MQTT 3.1.1、匿名） |
+| 機器の接続先の設定 | BrightEMS アプリ（マスターアカウント）の「ローカルMQTT Broker設定」でホストの LAN の IP を入力して有効にする |
+| 購読 | `+/device/response/#`（`{MAC}/device/response/client/04`＝入力レジスタ、`.../client/data`＝保持レジスタ） |
+| 送信先 | `{MAC}/client/request/data`（QoS 1） |
+| フレーム | Modbus RTU と同じ形（アドレス 0x11・機能コード・開始レジスタ・個数／値・CRC16。CRC は上位バイトが先）。応答はヘッダー6バイト＋データ＋CRC |
+| 状態取得 | 入力レジスタ（04）・保持レジスタ（03）を 0 から 80 個読み出す。機器は要求がなくても約1分ごとに入力レジスタを送ってくる |
+| 充電モード | 保持レジスタ 57（AC 静音充電）。1＝静かな充電、0＝高速充電。書き込み（06）後に読み直して照合する |
+
+- 前の要求の直後に送ると応答しないことがあるため、1秒空けて送り、応答がなければ再送する。
+- 書き込みは保持レジスタ 57 の 0／1 だけに限る（ファームウェアが値を検証しないため）。F2400 は AC・DC 出力のレジスタへの書き込みがトグル動作になる不具合が報告されており、出力は扱わない。
+- 動作確認は `uv run python scripts/fossibot_check.py [devices|status|raw|watch]`（読み取りのみ）、`silent on|off --confirm`（AC 静音充電の変更）で行う。

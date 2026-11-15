@@ -58,6 +58,7 @@ class DeviceState(enum.StrEnum):
 VERIFIED_TYPE_CODES = {(Vendor.SWITCHBOT, "Plug Mini (JP)")}
 # 移行時に登録するポータブル電源の種別（docs/17 §17.4.7）
 JACKERY_1000_NEW = "JACKERY_1000_NEW"
+FOSSIBOT_F2400 = "FOSSIBOT_F2400"
 RELAY_NOTE = "実機で ON／OFF と状態の照合を確認してから対応する"
 
 # 種別マスターの初期登録（docs/17 §17.4.2）。マイグレーションと同じ内容（テスト・起動時の補完用）
@@ -92,6 +93,17 @@ SEED_DEVICE_TYPES: list[dict[str, Any]] = [
         "power_control": False,
         "charge_mode": True,
         "default_capacity_wh": 1070.0,
+        "source": TypeSource.CUSTOM,
+        "note": None,
+    },
+    {
+        "vendor": Vendor.FOSSIBOT,
+        "code": FOSSIBOT_F2400,
+        "name": "FOSSiBOT F2400",
+        "category": DeviceCategory.PORTABLE_POWER,
+        "power_control": False,
+        "charge_mode": True,
+        "default_capacity_wh": 2048.0,
         "source": TypeSource.CUSTOM,
         "note": None,
     },

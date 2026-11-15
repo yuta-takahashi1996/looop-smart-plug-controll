@@ -18,7 +18,7 @@ flowchart TD
     I --> J[SwitchBot API]
 
     H --> P[Portable Power Client]
-    P --> Q[Jackery / FOSSiBOT クラウド]
+    P --> Q[Jackery クラウド / FOSSiBOT（自前の MQTT ブローカー）]
 
     D --> K[FastAPI]
     K --> L[Web UI]

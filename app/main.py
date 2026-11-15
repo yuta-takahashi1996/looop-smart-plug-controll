@@ -20,6 +20,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.api import auth, control, dashboard, devices, forecast, history, schedule
 from app.api import settings as settings_api
+from app.clients.fossibot import FossibotClient
 from app.clients.jackery import JackeryClient, JackeryPortablePower
 from app.clients.portable_power import PortablePowerClient
 from app.clients.switchbot import SwitchBotClient
@@ -60,8 +61,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.plug_monitor = PlugMonitor(switchbot, SessionLocal)
     jackery = JackeryClient(settings.jackery_account, settings.jackery_password.get_secret_value())
     # ポータブル電源のクライアント（メーカーごとに1つ。docs/17 §17.8.1）。設定画面の登録でも使う
+    fossibot = FossibotClient(settings.fossibot_mqtt_host, settings.fossibot_mqtt_port)
     portable_power_clients: dict[device_models.Vendor, PortablePowerClient] = {
         device_models.Vendor.JACKERY: JackeryPortablePower(jackery),
+        device_models.Vendor.FOSSIBOT: fossibot,
     }
     app.state.portable_power_clients = portable_power_clients
 
@@ -81,6 +84,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     scheduler = None
     if settings.app_env != "test":
+        # FOSSiBOT はブローカーに常時接続し、機器から届く値を受け取る（機器一覧にも使う）
+        fossibot.start()
         app.state.control.initialize()
         jobs = Jobs(settings, app.state.forecast_provider, app.state.plug_monitor, SessionLocal, app.state.control)
         scheduler = create_scheduler(settings, jobs)
@@ -89,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if scheduler is not None:
         scheduler.shutdown(wait=True)
         app.state.control.shutdown()
+        fossibot.stop()
     logger.info("shutting down")
 
 
