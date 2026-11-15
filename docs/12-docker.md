@@ -28,6 +28,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+      - /proc:/host/proc:ro   # メトリクス画面のネットワークの値（docs/18 §18.3.1。HOST_PROC_PATH=/host/proc）
 
     stop_grace_period: 30s
 

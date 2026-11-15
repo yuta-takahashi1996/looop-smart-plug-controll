@@ -189,6 +189,27 @@
   {% endcall %}
 </div>
 
+{%- set m = host_metrics %}
+<div class="mt-4">
+  {% call card(None) %}
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+    <h2 class="text-sm font-semibold text-slate-300">ホストの状態</h2>
+    <a href="{{ url_for('metrics') }}" class="text-xs text-sky-300 underline">メトリクスを見る</a>
+  </div>
+  {% if m %}
+  <dl class="grid grid-cols-2 gap-4 sm:grid-cols-5">
+    {{ stat("CPU", "%.1f"|format(m.cpu_percent), "%") }}
+    {{ stat("メモリ", "%.1f"|format(m.memory_percent), "%", "%.1f / %.1f GB"|format(m.memory_used / 1073741824, m.memory_total / 1073741824)) }}
+    {{ stat("CPU 温度", "%.1f"|format(m.temperature_c) if m.temperature_c is not none else "—", "℃" if m.temperature_c is not none else "", None if m.temperature_c is not none else "この環境では取得できません") }}
+    {{ stat("ストレージ", "%.1f"|format(m.storage_percent), "%", "空き %.0f GB"|format((m.storage_total - m.storage_used) / 1073741824)) }}
+    {% set net_value, net_unit = (m.net_rx_bps + m.net_tx_bps)|bitrate %}{{ stat("ネットワーク", net_value, net_unit, "受信＋送信") }}
+  </dl>
+  {% else %}
+  <p class="text-sm text-slate-400">メトリクスを取得中です。</p>
+  {% endif %}
+  {% endcall %}
+</div>
+
 {% if events %}
 <div class="mt-4">
   {% call card("お知らせ・エラー") %}

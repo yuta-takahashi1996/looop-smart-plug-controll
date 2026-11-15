@@ -254,6 +254,8 @@ def status_context(request: Request, session: Session) -> dict:
         "control": _control_summary(request, session, settings, now),
         "control_mode": request.app.state.control.control_mode.value,
         "batteries": _battery_summaries(request, session, settings),
+        # ホストのメトリクスの現在値（メモリ上の最新の値。docs/18 §18.5）
+        "host_metrics": request.app.state.host_metrics.latest(),
         **_schedule_summary(session, now),
     }
 
