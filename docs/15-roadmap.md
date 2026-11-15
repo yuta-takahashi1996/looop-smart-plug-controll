@@ -119,8 +119,8 @@
 
 ## Phase 12：FOSSiBOT
 
-- [ ] 方式の調査（クラウド API → 自前の MQTT ブローカーの順）と結果の記録
-- [ ] 採用の条件を満たした場合の実装（残量の取得・AC 静音充電）
+- [x] 方式の調査（クラウド API → 自前の MQTT ブローカーの順）と結果の記録（docs/fossibot-research.md。案 B で採用）
+- [x] 実装：Compose への Mosquitto の追加、`app/clients/fossibot.py`（残量の取得・AC 静音充電）、種別マスターへの `FOSSIBOT_F2400` の追加
 
 **完了条件：** 調査結果を記録し、採用した場合は F2400 の残量で判定できる。
 

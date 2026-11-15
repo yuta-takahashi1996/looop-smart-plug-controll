@@ -433,7 +433,7 @@ class ControlService:
             self._devices = devices
 
             # 登録済みのポータブル電源はすべて扱う（紐づくプラグがなくても、画面で残量の取得・充電モードの変更ができる）
-            fallback = safety.BatteryLimits.from_control(load_control_settings(session, self._settings))
+            fallback = safety.BatteryLimits.from_settings(self._settings)
             sources: dict[int, PowerSource] = {}
             for source in device_models.portable_powers(session):
                 current = self._sources.get(source.id)
@@ -472,9 +472,9 @@ class ControlService:
         return self._sources.get(source_id) if source_id is not None else None
 
     def _limits_for(self, device: DeviceRuntime, control: ControlSettings) -> safety.BatteryLimits:
-        """給電先のポータブル電源の下限・容量・効率（給電先がなければ全体の設定値）。"""
+        """給電先のポータブル電源の下限・容量・効率（給電先がなければ環境変数の初期値）。"""
         source = self.power_source(device.power_source_id)
-        return source.limits if source is not None else safety.BatteryLimits.from_control(control)
+        return source.limits if source is not None else safety.BatteryLimits.from_settings(self._settings)
 
     def _monitor_for(self, device: DeviceRuntime) -> BatteryMonitor | None:
         source = self.power_source(device.power_source_id)
@@ -1285,7 +1285,7 @@ class ControlService:
         self._record_measurements(schedule, sd, end)
         forecast = forecast_service.get_day_forecast(session, self._settings.looop_area, schedule.schedule_date, self._tz)
         if forecast.slots:
-            params = optimizer.PlanParams.from_settings(load_control_settings(session, self._settings))
+            params = optimizer.PlanParams.from_settings(load_control_settings(session, self._settings), self._settings)
             device = session.get(Device, sd.device_id)
             sd.executed_saving = optimizer.saving_between(
                 forecast.slots, sd.executed_start_at, end, optimizer.device_params(params, device)

@@ -263,3 +263,37 @@ def test_dashboard_shows_portable_power_without_linked_plug(logged_in_client: Te
     response = _post(logged_in_client, f"/control/charge-mode/{_source(session, 'JK2').id}/silent")
     assert response.status_code == 200
     assert control.charge_mode_for(_source(session, "JK2").id) == ChargeMode.SILENT  # Dry Run の想定
+
+
+# --- FOSSiBOT（docs/17 §17.9.4、Phase 12） ---
+
+
+def test_add_fossibot(logged_in_client: TestClient, portable: FakePortablePower, session: Session) -> None:
+    fossibot = FakePortablePower([PortablePowerInfo("70AF0906A6CE", "FOSSiBOT F2400", "F2400")])
+    app.state.portable_power_clients = {Vendor.JACKERY: portable, Vendor.FOSSIBOT: fossibot}
+
+    assert '<option value="FOSSIBOT">FOSSiBOT</option>' in logged_in_client.get("/settings").text
+    text = logged_in_client.get("/settings/portable-powers/new?vendor=FOSSIBOT").text
+    assert 'value="70AF0906A6CE"' in text
+    assert 'name="capacity_wh" type="number" min="1" step="1" required value="2048"' in text  # F2400 の公称容量
+
+    response = _post(
+        logged_in_client,
+        "/settings/portable-powers",
+        {"vendor": "FOSSIBOT", "external_id": "70AF0906A6CE", **_form("FOSSiBOT F2400", capacity_wh="2048")},
+    )
+
+    assert "FOSSiBOT F2400 を追加しました" in response.text
+    session.expire_all()
+    device = device_models.find_device(session, Vendor.FOSSIBOT, "70AF0906A6CE")
+    assert device is not None
+    assert device.device_type.code == device_models.FOSSIBOT_F2400
+    assert device.portable_power.capacity_wh == 2048
+
+
+def test_fossibot_without_devices_shows_hint(logged_in_client: TestClient, portable: FakePortablePower) -> None:
+    app.state.portable_power_clients = {Vendor.FOSSIBOT: FakePortablePower([])}
+
+    text = logged_in_client.get("/settings/portable-powers/new?vendor=FOSSIBOT").text
+
+    assert "ローカルMQTT Broker設定" in text

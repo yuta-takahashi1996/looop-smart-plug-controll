@@ -34,13 +34,10 @@ PAGES = [
 VALID_SETTINGS = {
     "operation_start": "08:30",
     "operation_end": "17:30",
-    "round_trip_efficiency": "80",
     "max_continuous_off_minutes": "90",
     "max_daily_off_minutes": "150",
     "min_switch_interval_minutes": "30",
     "estimated_average_power_w": "200",
-    "battery_min_percent": "5",
-    "battery_capacity_wh": "1070",
     "charge_mode_start": "SILENT",
     "charge_mode_end": "FAST",
 }
@@ -213,7 +210,11 @@ def test_settings_defaults_come_from_environment(logged_in_client: TestClient) -
     response = logged_in_client.get("/settings")
 
     assert 'name="operation_start" value="09:00"' in response.text
-    assert 'name="round_trip_efficiency" value="85"' in response.text
+    assert 'name="max_daily_off_minutes" value="180"' in response.text
+    # ポータブル電源の残量の下限・容量・変換効率は、ポータブル電源ごとに設定する（全体の初期値の欄はない）
+    assert "ポータブル電源の初期値" not in response.text
+    assert 'name="round_trip_efficiency"' not in response.text
+    assert 'name="battery_min_percent"' not in response.text
 
 
 def test_settings_save_and_reload(logged_in_client: TestClient) -> None:
@@ -229,7 +230,6 @@ def test_settings_save_and_reload(logged_in_client: TestClient) -> None:
 
     reloaded = logged_in_client.get("/settings").text
     assert 'name="operation_start" value="08:30"' in reloaded
-    assert 'name="round_trip_efficiency" value="80"' in reloaded
     assert 'name="estimated_average_power_w" value="200"' in reloaded
 
 
@@ -260,7 +260,6 @@ def test_settings_accepts_csrf_header(logged_in_client: TestClient) -> None:
     [
         ({"operation_start": "18:00", "operation_end": "09:00"}, "許可開始時刻は許可終了時刻より前"),
         ({"max_continuous_off_minutes": "200", "max_daily_off_minutes": "100"}, "最大連続OFF時間は"),
-        ({"round_trip_efficiency": "120"}, "変換効率"),
         ({"estimated_average_power_w": "abc"}, "想定平均負荷"),
     ],
 )
@@ -984,7 +983,7 @@ def test_history_shows_monthly_summaries(logged_in_client: TestClient, session) 
 def test_settings_are_grouped(logged_in_client: TestClient) -> None:
     text = logged_in_client.get("/settings").text
 
-    for title in ("スケジュール", "自動 OFF を許可する時間帯", "OFF 時間の制限", "ポータブル電源の初期値", "推定節約額"):
+    for title in ("スケジュール", "自動 OFF を許可する時間帯", "OFF 時間の制限", "推定節約額"):
         assert f">{title}</legend>" in text
 
 
@@ -1212,3 +1211,29 @@ def test_history_shows_device_and_filters(logged_in_client: TestClient, session)
     table = filtered.split("の操作履歴")[1].split("</table>")[0]
     assert "書斎のプラグ" in table and "リビングのプラグ" not in table
     assert logged_in_client.get("/history?device=").status_code == 200  # 「すべて」
+
+
+def test_battery_effective_price_uses_lowest_portable_power_efficiency(logged_in_client: TestClient) -> None:
+    from app.api.dashboard import _price_summary
+    from app.models.settings import set_value
+
+    _fetch(logged_in_client)
+    settings = get_settings()
+    now = datetime.now(JST)
+    with SessionLocal() as session:
+        set_value(session, "round_trip_efficiency", "0.5")  # 廃止した全体の値（保存済みでも読まない。D-13）
+        jackery = device_models.find_device(session, device_models.Vendor.JACKERY, "JK1")
+        assert jackery is not None and jackery.portable_power is not None
+        summary = _price_summary(session, settings, now, "energy")
+        assert summary.day_min is not None
+        assert summary.battery_effective_price == round(summary.day_min / jackery.portable_power.efficiency, 2)
+
+        fossibot = device_models.register_portable_power(
+            session, settings, "70AF0906A6CE", "FOSSiBOT F2400", vendor=device_models.Vendor.FOSSIBOT
+        )
+        assert fossibot.portable_power is not None
+        assert fossibot.portable_power.capacity_wh == 2048  # 容量は種別の公称容量
+        fossibot.portable_power.efficiency = 0.7
+        session.commit()
+        summary = _price_summary(session, settings, now, "energy")
+        assert summary.battery_effective_price == round(summary.day_min / 0.7, 2)

@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     jackery_account: str = ""
     jackery_password: SecretStr = SecretStr("")
     jackery_device_id: str = ""
+    # FOSSiBOT（自前の MQTT ブローカー経由。docs/17 §17.9.4）。未設定なら FOSSiBOT は扱わない
+    fossibot_mqtt_host: str = ""
+    fossibot_mqtt_port: int = Field(default=1883, ge=1, le=65535)
     # 残量の下限（%）と、残量の減り方の予測に使う容量（docs/07 §7.7）。効率は ROUND_TRIP_EFFICIENCY を共用する
     battery_min_percent: int = Field(default=5, ge=0, le=100)
     battery_capacity_wh: float = Field(default=1070, gt=0)

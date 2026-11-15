@@ -65,9 +65,6 @@
         {% if key == "estimated_average_power_w" and hints.average_power_w is not none %}
         <span class="mt-1 block text-xs text-sky-300">実測の目安：平均 {{ "%.0f"|format(hints.average_power_w) }}W（直近{{ hints.days }}日・{{ hints.count }}回の OFF）</span>
         {% endif %}
-        {% if key == "round_trip_efficiency" and hints.efficiency_percent is not none %}
-        <span class="mt-1 block text-xs text-sky-300">実測の目安：{{ hints.efficiency_percent }}%（直近{{ hints.days }}日・{{ hints.efficiency_count }}回の OFF の残量減少と消費電力から推定。放電のみの効率のため、充電の損失を含めるとこれより低くなります）</span>
-        {% endif %}
       </label>
       {% endfor %}
     </div>

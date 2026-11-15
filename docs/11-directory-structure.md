@@ -5,6 +5,8 @@ looop-power-controller/
 │
 ├── compose.yaml
 ├── Dockerfile
+├── docker/
+│   └── mosquitto.conf       # FOSSiBOT 用の MQTT ブローカーの設定（docs/17 §17.9.4）
 ├── .env
 ├── .env.example
 ├── .gitignore
@@ -32,7 +34,7 @@ looop-power-controller/
 │   │   ├── switchbot.py
 │   │   ├── portable_power.py
 │   │   ├── jackery.py
-│   │   └── fossibot.py      # 調査の結果、採用した場合（docs/17 §17.9）
+│   │   └── fossibot.py      # 自前の MQTT ブローカー経由（docs/17 §17.9.4）
 │   │
 │   ├── services/
 │   │   ├── forecast.py

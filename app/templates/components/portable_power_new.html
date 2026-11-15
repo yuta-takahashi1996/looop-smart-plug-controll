@@ -3,7 +3,11 @@
 {% if error %}
 <p class="rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-sm text-rose-200" role="alert">{{ error }}</p>
 {% elif not candidates %}
+{% if vendor == "FOSSIBOT" %}
+<p class="text-sm text-slate-400">追加できる機器がありません（ブローカーに接続している機器はすべて登録済みです。機器が出ない場合は BrightEMS アプリのローカルMQTT Broker設定を確認し、1〜2分後にやり直してください）。</p>
+{% else %}
 <p class="text-sm text-slate-400">追加できる機器がありません（アカウントに共有されている機器はすべて登録済みです）。</p>
+{% endif %}
 {% else %}
 <form method="post" action="{{ url_for('create_portable_power') }}" class="grid gap-3 rounded-lg border border-slate-700 p-3 sm:grid-cols-3" data-portable-power="new">
   <input type="hidden" name="csrf_token" value="{{ csrf_token(request) }}">

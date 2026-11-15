@@ -20,7 +20,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from app.config import Settings
 from app.models.schedule import ControlLog, ControlSchedule, ScheduleDevice, ScheduleDeviceStatus, ScheduleRule
-from app.models.settings import get_value, load_control_settings, set_value
+from app.models.settings import get_value, set_value
 from app.repositories.database import Base, UTCDateTime
 
 
@@ -58,6 +58,7 @@ class DeviceState(enum.StrEnum):
 VERIFIED_TYPE_CODES = {(Vendor.SWITCHBOT, "Plug Mini (JP)")}
 # 移行時に登録するポータブル電源の種別（docs/17 §17.4.7）
 JACKERY_1000_NEW = "JACKERY_1000_NEW"
+FOSSIBOT_F2400 = "FOSSIBOT_F2400"
 RELAY_NOTE = "実機で ON／OFF と状態の照合を確認してから対応する"
 
 # 種別マスターの初期登録（docs/17 §17.4.2）。マイグレーションと同じ内容（テスト・起動時の補完用）
@@ -92,6 +93,17 @@ SEED_DEVICE_TYPES: list[dict[str, Any]] = [
         "power_control": False,
         "charge_mode": True,
         "default_capacity_wh": 1070.0,
+        "source": TypeSource.CUSTOM,
+        "note": None,
+    },
+    {
+        "vendor": Vendor.FOSSIBOT,
+        "code": FOSSIBOT_F2400,
+        "name": "FOSSiBOT F2400",
+        "category": DeviceCategory.PORTABLE_POWER,
+        "power_control": False,
+        "charge_mode": True,
+        "default_capacity_wh": 2048.0,
         "source": TypeSource.CUSTOM,
         "note": None,
     },
@@ -390,12 +402,11 @@ def register_portable_power(
     vendor: Vendor = Vendor.JACKERY,
     now: datetime | None = None,
 ) -> Device:
-    """ポータブル電源を登録し、現在の全体の設定値で portable_power_settings を作る（画面からの登録では入力値で上書きする）。"""
+    """ポータブル電源を登録し、環境変数の初期値（容量は種別の公称容量を優先）で portable_power_settings を作る（画面からの登録では入力値で上書きする）。"""
     now = now or _now()
     device_type = find_type(session, Vendor.JACKERY, JACKERY_1000_NEW) if vendor == Vendor.JACKERY else None
     device_type = device_type or portable_power_type(session, vendor)
     assert device_type is not None, "種別マスターが初期登録されていません（alembic upgrade head）"
-    control = load_control_settings(session, settings)
     device = Device(
         device_type_id=device_type.id,
         external_id=external_id,
@@ -410,9 +421,9 @@ def register_portable_power(
     session.add(
         PortablePowerSettings(
             device_id=device.id,
-            capacity_wh=control.battery_capacity_wh,
-            min_percent=control.battery_min_percent,
-            efficiency=control.round_trip_efficiency,
+            capacity_wh=device_type.default_capacity_wh or settings.battery_capacity_wh,
+            min_percent=settings.battery_min_percent,
+            efficiency=settings.round_trip_efficiency,
             charge_mode_enabled=True,
         )
     )

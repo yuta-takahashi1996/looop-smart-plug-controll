@@ -26,19 +26,20 @@ class SystemSetting(Base):
 
 
 class ControlSettings(BaseModel):
-    """Web UI から変更できる制御条件。制約は app/config.py の Settings に揃える。"""
+    """Web UI から変更できる制御条件。制約は app/config.py の Settings に揃える。
+
+    ポータブル電源の残量の下限・容量・変換効率はポータブル電源ごとの設定（portable_power_settings）で持つ。
+    環境変数の BATTERY_MIN_PERCENT などは、追加するときの初期値と給電先がない場合の代わりの値にだけ使う（docs/17 §17.8.2）。
+    """
 
     auto_enable: bool
     operation_start: time
     operation_end: time
     off_all_day: bool = False  # 自動 OFF を終日許可する（時刻を使わない）
-    round_trip_efficiency: float = Field(gt=0, le=1)
     max_continuous_off_minutes: int = Field(ge=0)
     max_daily_off_minutes: int = Field(ge=0)
     min_switch_interval_minutes: int = Field(ge=0)
     estimated_average_power_w: float = Field(ge=0)
-    battery_min_percent: int = Field(ge=0, le=100)
-    battery_capacity_wh: float = Field(gt=0)
     # でんき予報のスケジュールの開始・終了時に設定する充電モードの既定値（docs/07 §7.10）
     charge_mode_start: ChargeModeOption = ChargeModeOption.SILENT
     charge_mode_end: ChargeModeOption = ChargeModeOption.FAST

@@ -242,13 +242,10 @@ def test_regenerate_uses_saved_settings(session: Session) -> None:
         auto_enable=True,
         operation_start=time(9),
         operation_end=time(18),
-        round_trip_efficiency=0.85,
         max_continuous_off_minutes=120,
         max_daily_off_minutes=180,
         min_switch_interval_minutes=30,
         estimated_average_power_w=150,
-        battery_min_percent=5,
-        battery_capacity_wh=1070,
     )
     save_control_settings(session, control)
     _store(session, _levels({range(20, 22): A}))
@@ -356,13 +353,10 @@ def test_gap_validation(session: Session, two_schedules: list[ControlSchedule]) 
         auto_enable=False,
         operation_start=time(9),
         operation_end=time(20),
-        round_trip_efficiency=0.85,
         max_continuous_off_minutes=120,
         max_daily_off_minutes=600,
         min_switch_interval_minutes=60,
         estimated_average_power_w=150,
-        battery_min_percent=5,
-        battery_capacity_wh=1070,
     )
     save_control_settings(session, control)
     advisory = two_schedules[0]
