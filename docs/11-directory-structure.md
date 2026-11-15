@@ -23,6 +23,7 @@ looop-power-controller/
 │   │   ├── control.py
 │   │   ├── devices.py
 │   │   ├── history.py
+│   │   ├── metrics.py       # メトリクス画面（docs/18）
 │   │   ├── schedule.py
 │   │   └── settings.py
 │   │
@@ -42,7 +43,8 @@ looop-power-controller/
 │   │   ├── scheduler.py
 │   │   ├── controller.py
 │   │   ├── safety.py
-│   │   └── maintenance.py
+│   │   ├── maintenance.py
+│   │   └── host_metrics.py  # ホストのメトリクス（docs/18）
 │   │
 │   ├── models/
 │   │   ├── device.py
@@ -60,6 +62,7 @@ looop-power-controller/
 │   │   ├── history.html
 │   │   ├── devices.html
 │   │   ├── settings.html
+│   │   ├── metrics.html
 │   │   └── components/
 │   │
 │   └── static/

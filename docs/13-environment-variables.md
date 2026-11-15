@@ -69,6 +69,8 @@ DATA_RETENTION_DAYS=400
 LOG_LEVEL=INFO
 ```
 
+`HOST_PROC_PATH`（初期値 `/proc`）はメトリクス画面で読む `/proc` のパス。Docker Compose では `compose.yaml` で `/host/proc`（ホストの `/proc` を読み取り専用でマウントしたもの）を設定するため、`.env` には書かない（docs/18-host-metrics.md §18.3.1）。
+
 初期状態は必ずDry Runとする。
 
 ## Web UI の認証・アクセス制御

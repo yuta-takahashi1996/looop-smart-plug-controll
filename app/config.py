@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     backup_generations: int = Field(default=14, ge=0)  # data/backups/ に残す日次バックアップの数（0 で無効）
     data_retention_days: int = Field(default=400, ge=30)  # 制御履歴・スケジュール・料金予報の保持期間
 
+    # Host metrics（docs/18-host-metrics.md）。Docker ではホストの /proc を読み取り専用でマウントし、そのパスを指定する
+    host_proc_path: str = "/proc"
+
     # Logging
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 

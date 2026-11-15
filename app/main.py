@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api import auth, control, dashboard, devices, forecast, history, schedule
+from app.api import auth, control, dashboard, devices, forecast, history, metrics, schedule
 from app.api import settings as settings_api
 from app.clients.fossibot import FossibotClient
 from app.clients.jackery import JackeryClient, JackeryPortablePower
@@ -30,6 +30,7 @@ from app.models.forecast import ADJUSTMENT_CATEGORY_LABELS
 from app.providers.looop import LooopForecastProvider
 from app.repositories.database import SessionLocal, get_session
 from app.services.controller import BatteryMonitor, ControlService, PlugMonitor
+from app.services.host_metrics import HostMetricsCollector, HostMetricsReader, format_bitrate
 from app.services.scheduler import Jobs, create_scheduler
 from app.templating import templates
 
@@ -82,8 +83,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if not app.state.control.dry_run:
         logger.warning("実制御が有効です（SwitchBot へコマンドを送信します）")
 
+    # ホストのメトリクス（メモリに直近60秒だけ持つ。docs/18）
+    host_metrics = HostMetricsCollector(HostMetricsReader(proc_path=settings.host_proc_path))
+    app.state.host_metrics = host_metrics
+
     scheduler = None
     if settings.app_env != "test":
+        host_metrics.start()
         # FOSSiBOT はブローカーに常時接続し、機器から届く値を受け取る（機器一覧にも使う）
         fossibot.start()
         app.state.control.initialize()
@@ -95,6 +101,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         scheduler.shutdown(wait=True)
         app.state.control.shutdown()
         fossibot.stop()
+        host_metrics.stop()
     logger.info("shutting down")
 
 
@@ -170,9 +177,10 @@ templates.env.globals["is_dry_run"] = lambda request: request.app.state.control.
 templates.env.globals["adjustment_labels"] = ADJUSTMENT_CATEGORY_LABELS
 # DB の日時（UTC）を表示用のタイムゾーンへ変換する
 templates.env.filters["local"] = lambda value, fmt: value.astimezone(ZoneInfo(settings.tz)).strftime(fmt)
+templates.env.filters["bitrate"] = format_bitrate
 
 app.include_router(auth.router)
-for module in (dashboard, control, forecast, schedule, history, devices, settings_api):
+for module in (dashboard, control, forecast, schedule, history, devices, settings_api, metrics):
     app.include_router(module.router, dependencies=[Depends(auth.require_login)])
 
 

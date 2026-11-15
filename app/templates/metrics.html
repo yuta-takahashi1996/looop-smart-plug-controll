@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}メトリクス | Looop Smart Plug Controller{% endblock %}
+
+{% block head %}
+<script src="{{ url_for('static', path='js/chart.umd.min.js') }}" defer></script>
+<script src="{{ url_for('static', path='js/metrics.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+  <h1 class="text-2xl font-bold">メトリクス</h1>
+  <p class="text-xs text-slate-500">本システムを動かしているホストの現在の状況（{{ interval|int }}秒ごとに更新、直近{{ history_seconds }}秒を表示。値は保存しません）</p>
+</div>
+
+<div id="metrics" data-url="{{ url_for('metrics_data') }}" data-interval="{{ interval }}" data-history="{{ history_seconds }}"
+     class="grid gap-4 lg:grid-cols-[16rem_1fr]">
+  {# 左：項目の一覧（タスクマネージャーの「パフォーマンス」と同じ形）。狭い画面では上に1行2つずつ並べる #}
+  <nav class="grid grid-cols-2 gap-2 lg:grid-cols-1" aria-label="メトリクスの項目">
+    {% for key, label in [("cpu", "CPU"), ("memory", "メモリ"), ("disk", "ストレージ"), ("network", "ネットワーク"), ("temperature", "CPU 温度")] %}
+    <button type="button" data-metric="{{ key }}"
+            class="metric-tab flex min-w-0 items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 p-2 text-left hover:border-slate-600 aria-pressed:border-sky-500 aria-pressed:bg-slate-800"
+            aria-pressed="{{ 'true' if loop.first else 'false' }}">
+      <span class="relative block h-10 w-12 shrink-0 sm:w-16"><canvas data-spark="{{ key }}"></canvas></span>
+      <span class="block min-w-0 flex-1">
+        <span class="block truncate whitespace-nowrap text-sm font-medium">{{ label }}</span>
+        <span class="block truncate text-xs tabular-nums text-slate-400" data-summary="{{ key }}">—</span>
+      </span>
+    </button>
+    {% endfor %}
+  </nav>
+
+  {# 右：選んだ項目の詳細 #}
+  <section class="min-w-0 rounded-xl border border-slate-800 bg-slate-900 p-4">
+    <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+      <h2 class="text-lg font-semibold" data-detail-title>CPU</h2>
+      <p class="text-2xl font-semibold tabular-nums" data-detail-value>—</p>
+    </div>
+    <p class="mb-2 text-xs text-slate-400" data-detail-caption></p>
+    <div class="relative h-64"><canvas id="metrics-main"></canvas></div>
+
+    {# CPU：コアごとの使用率 #}
+    <div data-panel="cpu" class="mt-4">
+      <h3 class="mb-2 text-sm font-semibold text-slate-300">コアごとの使用率</h3>
+      <div class="grid grid-cols-2 gap-2 sm:grid-cols-4" data-cores></div>
+    </div>
+
+    {# ストレージ：容量 #}
+    <div data-panel="disk" class="mt-4 hidden">
+      <h3 class="mb-2 text-sm font-semibold text-slate-300">容量</h3>
+      <div class="h-3 overflow-hidden rounded-full bg-slate-800"><div class="h-full rounded-full bg-emerald-500" style="width: 0%" data-storage-bar></div></div>
+      <p class="mt-1 text-xs tabular-nums text-slate-400" data-storage-text>—</p>
+    </div>
+
+    <dl class="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4" data-stats></dl>
+    <p class="mt-4 hidden rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200" role="status" data-empty>
+      メトリクスを取得中です（起動直後は数秒かかります）。
+    </p>
+  </section>
+</div>
+{% endblock %}

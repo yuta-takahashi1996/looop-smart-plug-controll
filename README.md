@@ -58,6 +58,8 @@ uv run pytest
 | [docs/14-safety.md](docs/14-safety.md) | 安全設計・例外処理 |
 | [docs/15-roadmap.md](docs/15-roadmap.md) | 実装フェーズ |
 | [docs/16-future-scope.md](docs/16-future-scope.md) | 将来的な拡張 |
+| [docs/17-multi-device.md](docs/17-multi-device.md) | 複数機器・複数ポータブル電源 |
+| [docs/18-host-metrics.md](docs/18-host-metrics.md) | ホストのメトリクス |
 
 ## 初期リリースの完成条件
 1. Docker環境でシステムが稼働する。
